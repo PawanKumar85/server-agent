@@ -111,6 +111,7 @@ class TestHlsCheck:
         just_fresh = FakeServer({f"{BASE}/m.m3u8": (200, media_playlist(), 12 + 17)})
         just_stale = FakeServer({f"{BASE}/m.m3u8": (200, media_playlist(), 12 + 19)})
         assert run(check_hls_url, just_fresh, f"{BASE}/m.m3u8").up
+        health.clear_health_caches()  # a later check, not the same one within the dedupe window
         assert not run(check_hls_url, just_stale, f"{BASE}/m.m3u8").up
 
     def test_no_program_date_time_skips_freshness(self):

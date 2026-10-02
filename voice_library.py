@@ -82,6 +82,20 @@ CREATE INDEX IF NOT EXISTS phrases_voice ON phrases (voice, mood);
 """
 
 
+FADE_S = 0.015  # each phrase fades in and out over 15 ms: no click where two recordings meet
+
+
+def _faded(samples: np.ndarray, rate: int) -> np.ndarray:
+    n = min(int(rate * FADE_S), len(samples) // 4)
+    if n < 2:
+        return samples
+    out = samples.astype("float32")
+    ramp = np.linspace(0.0, 1.0, n, dtype="float32")
+    out[:n] *= ramp
+    out[-n:] *= ramp[::-1]
+    return out.astype("<i2")
+
+
 class VoiceLibrary:
     def __init__(self, voice: "V.Voice"):
         self.voice = voice
@@ -161,7 +175,7 @@ class VoiceLibrary:
             return None, "", missing, None
         rate = V.SAMPLE_RATE
         gap = np.zeros(int(rate * GAP_S[mood]), dtype="<i2")
-        joined = np.concatenate([x for c in chunks for x in (c, gap)][:-1])
+        joined = np.concatenate([x for c in chunks for x in (_faded(c, rate), gap)][:-1])
         buf = io.BytesIO()
         sf.write(buf, joined, rate, format="FLAC", subtype="PCM_16")
         return buf.getvalue(), " ".join(said), missing, round(len(joined) / rate, 2)

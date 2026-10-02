@@ -345,9 +345,12 @@ class TestDeduplicationAndAdaptive:
                 def execute_query(self, *a, **k):
                     return FakeRecords([{"id": "trans", "urlHealth": None, "links": None, "incidentOpen": False, "failuresBefore": 0, "errorBefore": None}])
 
+            async def probe(rec, node, **kw):  # _probe needs the running loop
+                return await rec._probe(node, **kw)
+
             rec1 = HealthRecorder(DummyDriver(), topo, fake_checker, metrics=DummyMetrics())
             # Cycle 1: check trans
-            h1 = loop.run_until_complete(rec1._probe("trans"))
+            h1 = loop.run_until_complete(probe(rec1, "trans"))
             assert len(calls) == 1
             assert h1.up is True
 
@@ -357,7 +360,7 @@ class TestDeduplicationAndAdaptive:
 
             # Cycle 2: another recorder arrives within TTL
             rec2 = HealthRecorder(DummyDriver(), topo, fake_checker, metrics=DummyMetrics())
-            h2 = loop.run_until_complete(rec2._probe("trans", max_age_s=60.0))
+            h2 = loop.run_until_complete(probe(rec2, "trans", max_age_s=60.0))
             assert len(calls) == 1  # 0 extra network calls!
             assert h2.latency_ms == 12
         finally:

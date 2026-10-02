@@ -48,3 +48,6 @@ Thumbs.db
 
 # Browser automation scratch
 .chrome-tmp/
+
+# Downloaded voice models (baked into the Docker image)
+models/

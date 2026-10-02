@@ -113,26 +113,28 @@ function scoreServer(n) {
 }
 
 function serverCard(n, s, rank) {
+  const isHi = typeof getLanguage === "function" && getLanguage() === "hi";
+  const tr = typeof trHinglish === "function" ? trHinglish : (x => x);
   const roles = (n.labels || []).filter(l => ROLE_NAMES[l]).map(l => `<span class="srv-role role-${l}">${ROLE_NAMES[l]}</span>`).join("");
   const channels = [...new Set((n.links || []).map(l => l.channel))];
   const passed = n.pingCount ? `${(100 - s.rate * 100).toFixed(1)}%` : "—";
   const mttr = s.pred?.profile?.mttr_s;
   return `<button type="button" class="srv-card band-${s.band.id}" data-server="${esc(n.id)}"
-      aria-label="${esc(`#${rank} ${n.id}, ${s.band.label} risk, score ${s.score}. ${s.reasons.map(r => r.text).join(". ")}`)}">
+      aria-label="${esc(`#${rank} ${n.id}, ${s.band.label} risk, score ${s.score}. ${s.reasons.map(r => tr(r.text)).join(". ")}`)}">
     <div class="srv-card-top">
       <span class="srv-rank">#${rank}</span>
       <span class="srv-band">${s.band.label}</span>
-      <span class="srv-score" title="Risk score out of 100">${s.score}</span>
+      <span class="srv-score" title="${isHi ? 'Khatre ka score (out of 100)' : 'Risk score out of 100'}">${s.score}</span>
     </div>
     <div class="srv-name"><span class="dot" style="background:${statusColor(n.status)}"></span>${esc(srvShort(n.id))}</div>
     <div class="srv-meta">${roles}${channels.length ? `<span class="srv-channels" title="${esc(channels.join(", "))}">${esc(channels.slice(0, 3).join(", "))}${channels.length > 3 ? ` +${channels.length - 3}` : ""}</span>` : ""}</div>
     <div class="srv-meter" aria-hidden="true"><i style="width:${Math.max(3, s.score)}%"></i></div>
-    <ul class="srv-reasons">${s.reasons.slice(0, 3).map(r => `<li class="r-${r.tone}">${esc(r.text)}</li>`).join("")}</ul>
+    <ul class="srv-reasons">${s.reasons.slice(0, 3).map(r => `<li class="r-${r.tone}">${esc(tr(r.text))}</li>`).join("")}</ul>
     <dl class="srv-stats">
-      <div><dt>Checks passed</dt><dd>${passed}</dd></div>
-      <div><dt>Response</dt><dd>${n.latency != null ? `${Math.round(n.latency)} ms` : "—"}</dd></div>
-      <div><dt>Streams</dt><dd>${s.streams ? `${s.streams - s.failing}/${s.streams} live` : "—"}</dd></div>
-      <div><dt>${mttr ? "Usual recovery" : "Last check"}</dt><dd>${mttr ? (mttr < 90 ? `${Math.round(mttr)} s` : `${Math.round(mttr / 60)} min`) : srvAgo(n.lastPing)}</dd></div>
+      <div><dt>${isHi ? "Passed checks" : "Checks passed"}</dt><dd>${passed}</dd></div>
+      <div><dt>${isHi ? "Latency (RTT)" : "Response"}</dt><dd>${n.latency != null ? `${Math.round(n.latency)} ms` : "—"}</dd></div>
+      <div><dt>${isHi ? "Live streams" : "Streams"}</dt><dd>${s.streams ? `${s.streams - s.failing}/${s.streams} live` : "—"}</dd></div>
+      <div><dt>${mttr ? (isHi ? "Recovery time" : "Usual recovery") : (isHi ? "Aakhri check" : "Last check")}</dt><dd>${mttr ? (mttr < 90 ? `${Math.round(mttr)} s` : `${Math.round(mttr / 60)} min`) : srvAgo(n.lastPing)}</dd></div>
     </dl>
   </button>`;
 }

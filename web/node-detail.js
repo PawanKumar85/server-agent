@@ -170,18 +170,25 @@ function showDetail(id) {
 // Glitches on a Final (glitch.py): the last hour against its learned normal, the 10-minute risk and why, the
 // upstream failures that usually come first, and the latest events.
 function glitchSectionHtml(id) {
+  const isHi = typeof getLanguage === "function" && getLanguage() === "hi";
+  const tr = typeof trHinglish === "function" ? trHinglish : (x => x);
   const g = (typeof nodeAlerts !== "undefined" && nodeAlerts.glitch[id]) || null;
-  if (!g) return `<h4 class="trace-title">Glitches</h4><p class="sub">Checked once a minute; the first results appear after two checks.</p>`;
+  if (!g) return `<h4 class="trace-title">${isHi ? "Stream Glitches" : "Glitches"}</h4><p class="sub">${isHi ? "Har minute check hota hai; do checks ke baad results aate hain." : "Checked once a minute; the first results appear after two checks."}</p>`;
   const events = nodeAlerts.glitchEvents.filter(e => e.node === id).slice(0, 5);
   const tone = g.band === "HIGH" ? "bad" : g.band === "MEDIUM" ? "warn" : "";
-  const kinds = Object.entries(g.lastHourKinds || {}).map(([k, n]) => `${k} ×${n}`).join(", ");
-  return `<h4 class="trace-title">Glitches <span class="nd-count ${tone}" title="Risk of glitches in the next 10 minutes">risk ${g.risk}/100 · ${g.band.toLowerCase()}</span></h4>
+  const kinds = Object.entries(g.lastHourKinds || {}).map(([k, n]) => `${tr(k)} ×${n}`).join(", ");
+  const bandLabel = isHi ? tr(g.band.toLowerCase()) : g.band.toLowerCase();
+  const summaryLine = isHi
+    ? `<b>${g.lastHour}</b> glitches pichhle 1 ghante mein${g.normalPerHour != null ? `, aamtaur par lagbhag ${Math.round(g.normalPerHour)}` : " (normal rate analyze ho raha hai)"}${kinds ? ` · ${esc(kinds)}` : ""}`
+    : `<b>${g.lastHour}</b> in the last hour${g.normalPerHour != null ? `, usually about ${Math.round(g.normalPerHour)}` : " (still learning the normal rate)"}${kinds ? ` · ${esc(kinds)}` : ""}`;
+
+  return `<h4 class="trace-title">${isHi ? "Stream Glitches" : "Glitches"} <span class="nd-count ${tone}" title="${isHi ? 'Agale 10 minute mein glitch ka khatra' : 'Risk of glitches in the next 10 minutes'}">${isHi ? `khatra ${g.risk}/100 · ${bandLabel}` : `risk ${g.risk}/100 · ${bandLabel}`}</span></h4>
     <div class="nd-glitch">
-      <div><b>${g.lastHour}</b> in the last hour${g.normalPerHour != null ? `, usually about ${Math.round(g.normalPerHour)}` : " (still learning the normal rate)"}${kinds ? ` · ${esc(kinds)}` : ""}</div>
-      ${g.reasons.length ? `<ul class="nd-glitch-why">${g.reasons.map(r => `<li>${esc(r)}</li>`).join("")}</ul>` : `<div class="sub">Nothing points to glitches right now.</div>`}
-      ${g.leads.length ? `<div class="sub">Learned: glitches here usually follow failures on ${g.leads.map(l => `${esc(srvShortName(l.node))} (${Math.round(l.hit * 100)}% of the time, ${l.lift}× the usual)`).join(", ")}.</div>` : ""}
-      ${g.deliveryRatio != null ? `<div class="sub">Delivery: a full-quality segment arrives in ${Math.round(g.deliveryRatio * 100)}% of its length (buffering above 80%).</div>` : ""}
-      ${events.length ? `<ul class="nd-glitch-events">${events.map(e => `<li><span>${esc(e.words)}${e.count > 1 ? ` ×${e.count}` : ""}</span><span class="sub">${esc(ndAgo(new Date(e.ts * 1000).toISOString()) || "")}</span></li>`).join("")}</ul>` : ""}
+      <div>${summaryLine}</div>
+      ${g.reasons.length ? `<ul class="nd-glitch-why">${g.reasons.map(r => `<li>${esc(tr(r))}</li>`).join("")}</ul>` : `<div class="sub">${isHi ? "Abhi koi glitch ka signal nahi hai, sab theek chal raha hai." : "Nothing points to glitches right now."}</div>`}
+      ${g.leads.length ? `<div class="sub">${isHi ? "AI History: Yahan ke glitches aamtaur par in servers ke down hone ke baad aate hain: " : "Learned: glitches here usually follow failures on "}${g.leads.map(l => `${esc(srvShortName(l.node))} (${Math.round(l.hit * 100)}% ${isHi ? "baar" : "of the time"}, ${l.lift}× ${isHi ? "zyada asar" : "the usual"})`).join(", ")}.</div>` : ""}
+      ${g.deliveryRatio != null ? `<div class="sub">${isHi ? `CDN Delivery: Full-quality segment aane mein apne duration ka ${Math.round(g.deliveryRatio * 100)}% time le raha hai (80% se upar buffer karega).` : `Delivery: a full-quality segment arrives in ${Math.round(g.deliveryRatio * 100)}% of its length (buffering above 80%).`}</div>` : ""}
+      ${events.length ? `<ul class="nd-glitch-events">${events.map(e => `<li><span>${esc(tr(e.words))}${e.count > 1 ? ` ×${e.count}` : ""}</span><span class="sub">${esc(ndAgo(new Date(e.ts * 1000).toISOString()) || "")}</span></li>`).join("")}</ul>` : ""}
     </div>`;
 }
 // SCTE-35 ad breaks on a Final (scte.py): now, the learned weekly pattern, the next expected one, problems, recent.

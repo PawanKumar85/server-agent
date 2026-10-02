@@ -45,13 +45,14 @@ def test_an_alert_is_stitched_from_recorded_phrases(tmp_path):
     assert out["name"] == "Deepanshu"
 
 
-def test_a_missing_piece_falls_back_to_a_generic_one(tmp_path):
+def test_a_missing_piece_means_the_real_name_is_said_instead(tmp_path):
     v = Voice(VoiceStore(tmp_path / "voice.db"), rng=random.Random(1))
     record(v, "shubh", "urgent", [VL.GENERIC_OPENER["urgent"], VL.GENERIC_CHANNEL["down"]] +
            [o.format(name="Anushrav") for o in VL.OPENERS["urgent"]["off"]] + VL.CLOSERS["urgent"]["off"])
+    v.neural = None  # no neural voice in this test
     out = v.alert({"severity": "CRITICAL", "channels": ["brand-new channel"], "subject": "n", "style": "urgent"})
-    assert out["audio_url"] and "Ek channel band hai!" in out["text"] and out["missing"] >= 1
-    assert out["speaker"] == "shubh"  # the voice that has phrases
+    # The recordings can't say this channel's name: no generic "Ek channel band hai", the real name instead
+    assert out["missing"] >= 1 and out["audio_url"] is None and "brand-new channel" in out["text"]
 
 
 def test_status_counts_what_is_recorded(tmp_path):

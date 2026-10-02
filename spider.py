@@ -276,7 +276,7 @@ RECOVER_AFTER_SUCCESSES = int(os.environ.get("RECOVER_AFTER_SUCCESSES", "2"))
 
 # Deduplication and adaptive polling settings
 HEALTH_CACHE_ENABLED = os.environ.get("HEALTH_CACHE_ENABLED", "1") not in ("0", "false", "False")
-HEALTH_CACHE_TTL_S = float(os.environ.get("HEALTH_CACHE_TTL_S", "15.0"))
+HEALTH_CACHE_TTL_S = float(os.environ.get("HEALTH_CACHE_TTL_S", "5.0"))  # never spans two cycles: a fresh outage is never hidden
 ADAPTIVE_POLLING = os.environ.get("ADAPTIVE_POLLING", "1") not in ("0", "false", "False")
 INTERMEDIATE_CADENCE_S = float(os.environ.get("INTERMEDIATE_CADENCE_S", "60.0"))
 
@@ -579,8 +579,6 @@ class HealthRecorder:
     async def _check_and_record(self, node_id: str, max_age_s: Optional[float] = None) -> NodeHealth:
         health = await self._probe(node_id, max_age_s=max_age_s)
         now_dt = datetime.now(timezone.utc)
-        now = now_dt.isoformat(timespec="seconds")
-
         record, status, entry = await self._write(node_id, health, now_dt)
         if entry:  # after the commit: a retried transaction must not log twice
             self.metrics.add_incident(node_id, entry)
@@ -924,6 +922,11 @@ class Spider:
         """Move onto the node, then check it."""
         return await self._check(node_id, visited=True, max_age_s=max_age_s)
 
+    async def _glance(self, node_id: str) -> NodeHealth:
+        """The node's health for a decision only (adaptive polling): not a step of the walk, no event, no move.
+        It shares the cycle's probe, so the walk's own check of this node later costs no second ping."""
+        return await self.recorder._probe(node_id)
+
     async def peek(self, node_id: str, max_age_s: Optional[float] = None) -> NodeHealth:
         """Check an upstream dependency of a failed node without moving onto it."""
         return await self._check(node_id, visited=False, max_age_s=max_age_s)
@@ -983,7 +986,7 @@ class Spider:
                 all_inputs.extend(self.topology.inputs(t_id))
             primary_main = next((i for i in all_inputs if self._is_main(i)), all_inputs[0] if all_inputs else None)
             if primary_main:
-                main_h = await self.peek(primary_main)
+                main_h = await self._glance(primary_main)
                 if main_h.up:
                     adaptive_cadence = INTERMEDIATE_CADENCE_S
 
@@ -1052,7 +1055,7 @@ class Spider:
 
         downstream_cadence = None
         if ADAPTIVE_POLLING and start_health.up:
-            final_peek = await self.peek(self.final_id)
+            final_peek = await self._glance(self.final_id)
             if final_peek.up:
                 downstream_cadence = INTERMEDIATE_CADENCE_S
 

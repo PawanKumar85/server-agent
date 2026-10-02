@@ -309,6 +309,7 @@ def format_hinglish_final_announcement(
         issue = "upstream feed fail ho gaya hai, spider walk ruk chuka hai."
     else:
         issue = reason if reason else "stream failure detect hua hai."
+    issue = issue.rstrip(".! ")  # the templates add their own punctuation (no "hai.!")
 
     # 3. CRITICAL (Order Tone) - Dynamic variations
     if sev == "CRITICAL":
@@ -405,10 +406,10 @@ def get_node_context_endpoint(node: str = "", channel: str = ""):
 
 
 class IncidentSummarizeRequest(BaseModel):
-    logs: List[str] = Field(..., description="List of incident log lines or telemetry alerts")
+    logs: List[str] = Field(..., max_length=2000, description="List of incident log lines or telemetry alerts")
     channel: Optional[str] = Field("", description="Optional channel name")
     server: Optional[str] = Field("", description="Optional server or origin name")
-    max_sentences: Optional[int] = Field(3, description="Maximum summary sentences to extract")
+    max_sentences: Optional[int] = Field(3, ge=1, le=20, description="Maximum summary sentences to extract")
 
 
 @router.post("/api/incidents/summarize")

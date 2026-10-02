@@ -48,7 +48,7 @@ def test_alerts_say_what_to_do_best_evidence_first():
 def test_with_nothing_recorded_the_browser_reads_a_natural_line_with_the_steps(tmp_path):
     v = make(tmp_path)
     out = v.alert({"severity": "WARNING", "channels": ["sakshitv"], "server": "cloud.ottlive.co.in", "title": "Falling behind"})
-    assert out["audio_url"] is None and out["writer"].startswith("template:calm:")
+    assert out["audio_url"] is None and out["writer"].startswith("template:warn:calm:")
     assert "sakshitv" in out["text"] and "Anushrav" in out["text"] and "Ye karo..." in out["text"]
     again = v.alert({"severity": "CRITICAL", "channels": ["sakshitv"], "server": "cloud.ottlive.co.in"})
     assert again["repeats"] == 1 and again["style"] == "angry"  # still down: it gets angrier
@@ -81,10 +81,10 @@ def test_voices_are_shown_under_the_teams_names_and_the_polite_tone_as_om_prakas
         out = v.alert({"severity": "AGGRESSIVE", "channels": ["Rang Manch"], "minutes": 30, "subject": str(i)})
         assert out["name"] == voice.VOICE_PEOPLE.get(out["speaker"], "Bot") and "Anushrav" in out["text"]
     calm = v.alert({"severity": "WARNING", "channels": ["sakshitv"], "subject": "c"})
-    assert calm["style"] == "calm" and calm["name"] == "Om Prakash"
-    assert v.display_name("urgent", "rohan") == "Sumit" and v.display_name("urgent", "kabir") == "Deepanshu"
+    assert calm["style"] == "calm" and calm["name"] == "Manish"
+    assert v.display_name("urgent", "rohan") == "Himanshu" and v.display_name("urgent", "kabir") == "Deepanshu"
     assert v.display_name("urgent", "amit") == "Bot" and v.addressee("calm", "rohan") == "Anushrav"
-    assert v.store.stats()["recent"][0]["name"] == "Om Prakash"
+    assert v.store.stats()["recent"][0]["name"] == "Manish"
 
 
 def test_ratings_and_quick_reactions_teach_the_voice(tmp_path):
@@ -162,3 +162,16 @@ def test_old_wav_clips_are_reencoded(tmp_path):
         db.execute("INSERT INTO clips (ts, text, speaker, style, sha, audio, bytes, codec) VALUES (1, 't', 's', 'calm', 'x', ?, ?, 'wav')",
                    (wav_bytes(1.0), len(wav_bytes(1.0))))
     assert store.compact() == 1 and store.audio(1)[1] == "flac" and store.compact() == 0
+
+
+def test_a_warning_is_never_announced_as_an_outage(tmp_path):
+    v = make(tmp_path)
+    v.neural = None
+    outage_words = ("band", "down", "off air", "gaya", "atak")
+    for i in range(20):  # a slow server that has stayed slow for 10 minutes, at every level
+        out = v.alert({"severity": "AGGRESSIVE", "channels": ["tnpnews"], "server": "cloud1.ottlive.co.in",
+                       "title": "HTTP latency 1260 is 9σ above normal", "minutes": 10, "subject": f"w{i}"})
+        said = out["text"].lower().split("ye karo")[0]
+        assert "latency" in said and not any(w in said for w in outage_words), out["text"]
+    down = v.alert({"severity": "CRITICAL", "channels": ["tnpnews"], "title": "Stream stopped updating", "subject": "d"})
+    assert any(w in down["text"].lower() for w in outage_words)  # a real outage still says so

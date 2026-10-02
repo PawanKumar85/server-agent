@@ -1395,6 +1395,11 @@ class Tools:
             yield {"type": "token", "text": f"⚠️ **Single Point of Failure (SPOF) — Missing BackupLink ({len(missing_backup)} channels):**\n"}
             yield {"type": "token", "text": f"These channels have no redundant input configured: {', '.join(missing_backup)}.\n\n"}
 
+        if missing_main:
+            issues_found = True
+            yield {"type": "token", "text": f"🔴 **No Main Input ({len(missing_main)} channels):**\n"}
+            yield {"type": "token", "text": f"These channels have no MainInput feeding them: {', '.join(missing_main)}.\n\n"}
+
         if missing_final:
             issues_found = True
             yield {"type": "token", "text": f"🔴 **Broken Pipeline — Missing FinalLink ({len(missing_final)} channels):**\n"}
@@ -1410,8 +1415,13 @@ class Tools:
             yield {"type": "token", "text": f"⚠️ **Unfed Transcoders ({len(transcoders_unfed)} nodes):**\n"}
             yield {"type": "token", "text": f"Transcoder domains with no incoming `FEEDS` relationship: {', '.join(transcoders_unfed)}.\n\n"}
 
+        if transcoders_unproducing:
+            issues_found = True
+            yield {"type": "token", "text": f"⚠️ **Transcoders Producing Nothing ({len(transcoders_unproducing)} nodes):**\n"}
+            yield {"type": "token", "text": f"Transcoder domains with no outgoing `PRODUCES` relationship to a Final: {', '.join(sorted(transcoders_unproducing))}.\n\n"}
+
         if not issues_found:
-            yield {"type": "token", "text": "✓ **Audit Passed!** All channels have active redundant inputs, all transcoders are connected, and no orphan nodes exist.\n\n"}
+            yield {"type": "token", "text": "✓ **Audit Passed!** Every channel has a Main input, a backup and a Final; every transcoder is fed and produces; no orphan nodes.\n\n"}
 
         yield {"type": "token", "text": f"**Audit Statistics:** {len(snap.channels)} channels, {len(all_domains)} servers, {len(edges)} pipeline relationships.\n"}
 
@@ -1759,7 +1769,6 @@ class Tools:
             yield {"type": "token", "text": f"❌ Validation failed for new stream link: {err_msg}\n"}
             return
 
-        domain = link.domain
         node_id = link.node_id
 
         # Phase 1: Preview & Confirmation Request
@@ -2017,7 +2026,6 @@ class Tools:
                 yield {"type": "token", "text": f"❌ Node `{raw_node}` not found in the topology graph.\n"}
                 return
 
-        node_props = dict(records[0])
         snap = Snapshot(self.driver)
 
         # Blast Radius Analysis

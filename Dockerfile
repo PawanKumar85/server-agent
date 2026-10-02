@@ -15,6 +15,18 @@ ENV FASTEMBED_CACHE_PATH=/opt/fastembed HF_HUB_DISABLE_TELEMETRY=1
 RUN python -c "from fastembed import TextEmbedding; TextEmbedding('sentence-transformers/all-MiniLM-L6-v2', cache_dir='/opt/fastembed')" \
  && chmod -R a+rX /opt/fastembed
 
+# Bake the local neural Hindi voices (Piper, ~190 MB) into the image: natural alerts with no API calls at runtime.
+ENV PIPER_DIR=/opt/piper
+RUN python - <<'EOF'
+import os, urllib.request
+base = "https://huggingface.co/rhasspy/piper-voices/resolve/main/hi/hi_IN"
+os.makedirs("/opt/piper", exist_ok=True)
+for v in ("rohan", "pratham", "priyamvada"):
+    for ext in ("onnx", "onnx.json"):
+        urllib.request.urlretrieve(f"{base}/{v}/medium/hi_IN-{v}-medium.{ext}", f"/opt/piper/hi_IN-{v}-medium.{ext}")
+EOF
+RUN chmod -R a+rX /opt/piper
+
 COPY *.py ./
 COPY routes ./routes
 COPY web ./web

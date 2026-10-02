@@ -78,8 +78,12 @@ function loadAvailableVoices() {
 function findHindiVoice(voices) {
   if (!voices || !voices.length) return null;
 
-  // 1. Dedicated Hindi Voices (Google हिन्दी, Lekha, Kalpana, Hemant)
-  let v = voices.find(x => x.name === "Google हिन्दी" || /^(Lekha|Kalpana|Hemant)$/i.test(x.name));
+  // 0. The most natural Hindi voices first: neural / enhanced / premium / online ones sound far less robotic.
+  const hindi = voices.filter(x => (x.lang || "").toLowerCase().replace("_", "-").startsWith("hi"));
+  let v = hindi.find(x => /natural|neural|enhanced|premium|online/i.test(x.name)) || hindi.find(x => x.name === "Google हिन्दी");
+  if (v) return v;
+  // 1. Dedicated Hindi Voices (Lekha, Kalpana, Hemant)
+  v = voices.find(x => /^(Lekha|Kalpana|Hemant)/i.test(x.name));
   if (v) return v;
 
   // 2. Language tag matching Hindi (hi-IN, hi_IN, or starting with hi)
@@ -401,176 +405,232 @@ function normalizeTextForSpeech(text) {
     .replace(/कर/g, "kar")
     .replace(/सही/g, "Sahi")
     // Expand bracket dot markers e.g. [dot] or [dot ] into natural spoken 'dot'
-    .replace(/\[\s*dot\s*\]/gi, " dot ")
+    // Servers by their short name, like people say them: "xcode4.ottlive.co.in" -> "xcode4"
+    .replace(/\b([a-z0-9-]+)(?:\s*\[\s*dot\s*\]\s*[a-z0-9-]+)+/gi, "$1")
+    .replace(/\b([a-z][a-z0-9-]*)(?:\.[a-z0-9-]+)+\.(?:in|com|net|org|io|co)\b/gi, "$1")
+    .replace(/\b[a-z0-9-]+\/(?=[A-Z])/g, "")  // "cdn/Rang Manch" -> "Rang Manch" (the channel, not the path)
+    .replace(/(\d+)\.(\d+)/g, "$1 point $2")  // 98.5 -> "98 point 5", never "98 dot 5"
+    .replace(/(\d)\s*ms\b/g, "$1 millisecond")
+    .replace(/(\d)\s*s\b/g, "$1 second")
+    .replace(/(\d)\s*%/g, "$1 percent")
+    .replace(/\[\s*dot\s*\]/gi, " ")
     .replace(/\s+/g, " ")
     .trim();
 }
 
-function speakHinglish(text, severity, skipChime = false, serverName = null) {
-  if (!window.speechSynthesis || !ttsAlerts.enabled || !text) return;
+const MOOD_WORDS = { calm: "Calm", urgent: "Urgent", angry: "Angry", furious: "Furious", relieved: "Relieved" };
 
+// --- One voice at a time, like a real control-room announcer ---
+// Alerts wait in a queue: nothing talks over anything else. A more urgent alert may cut in on a calmer one; a newer
+// alert about the same thing replaces the queued one; anything older than 90 s is dropped (no longer news). The chime
+// finishes before the voice starts, and preview videos are turned down while the voice speaks.
+const PRIORITY = { CRITICAL: 3, AGGRESSIVE: 3, WARNING: 2, RECOVERY: 1 };
+const QUEUE_MAX_AGE_MS = 90000;
+const GAP_BETWEEN_MS = 700;
+ttsAlerts.queue = [];
+ttsAlerts.current = null;  // {job, stop()}
+
+function jobSubject(job) {
+  return job.ctx.subject || (job.ctx.channels || []).slice().sort().join(",") || job.ctx.server || job.text;
+}
+
+function enqueueSpeech(job) {
+  const subject = jobSubject(job);
+  // A recovery makes any queued alert about the same thing pointless, and vice versa: keep only the newest.
+  ttsAlerts.queue = ttsAlerts.queue.filter(j => jobSubject(j) !== subject);
+  ttsAlerts.queue.push(job);
+  ttsAlerts.queue.sort((a, b) => (PRIORITY[b.severity] || 0) - (PRIORITY[a.severity] || 0) || a.at - b.at);
+  const cur = ttsAlerts.current;
+  if (cur && (PRIORITY[job.severity] || 0) > (PRIORITY[cur.job.severity] || 0)) cur.stop();  // urgent cuts in
+  drainSpeechQueue();
+}
+
+async function drainSpeechQueue() {
+  if (ttsAlerts.draining) return;  // one runner only, even during the pause between alerts
+  ttsAlerts.draining = true;
   try {
-    // 1. Play Indian broadcast chime tone with dynamic learned notes
-    if (!skipChime) playIndianBroadcastChime(severity, serverName);
-
-    // 2. Cancel any previous speech
-    window.speechSynthesis.cancel();
-
-    const spokenText = normalizeTextForSpeech(text);
-    const utter = new SpeechSynthesisUtterance(spokenText);
-    const voice = getActiveVoice();
-
-    // Target Language: Hindi (hi-IN)
-    utter.lang = ttsAlerts.targetLanguage || "hi-IN";
-    if (voice) {
-      utter.voice = voice;
-      if (voice.lang && voice.lang.toLowerCase().startsWith("hi")) {
-        utter.lang = voice.lang;
-      }
-    }
-
-    // Audio Tone Profiles & Dynamic Data-Driven Tuning:
-    ttsAlerts.speechStartTime = Date.now();
-    ttsAlerts.activeServerSpeaking = serverName || null;
-
-    const profile = serverName ? ttsAlerts.getNodeProfile(serverName) : null;
-    const tuning = profile?.audio_tuning;
-    const tod = ttsAlerts.dynamicPolicy?.time_of_day || {};
-
-    if (severity === "CRITICAL") {
-      utter.rate = 0.96;
-      utter.pitch = 1.05;
-      utter.volume = 1.0;
-    } else if (severity === "AGGRESSIVE") {
-      utter.rate = 1.15;
-      utter.pitch = 1.25;
-      utter.volume = 1.0;
-    } else if (severity === "WARNING") {
-      utter.rate = 0.85;
-      utter.pitch = 0.92;
-      utter.volume = 0.82;
-    } else {
-      utter.rate = 0.90;
-      utter.pitch = 1.0;
-      utter.volume = 0.85;
-    }
-
-    // Apply learned MTTR & flapper speech modulation
-    if (tuning) {
-      if (tuning.speech_rate) utter.rate = tuning.speech_rate;
-      if (tuning.speech_pitch) utter.pitch = tuning.speech_pitch;
-      if (tuning.anti_fatigue) utter.volume = Math.min(utter.volume, 0.88);
-    }
-
-    // Apply Time of Day Volume & Pitch Mods (Office day chatter vs night shift silence)
-    if (tod.volume_boost) {
-      utter.volume = Math.min(1.0, utter.volume + tod.volume_boost);
-    }
-    if (tod.pitch_mod) {
-      utter.pitch = Math.min(1.4, utter.pitch + tod.pitch_mod);
-    }
-
-    showTtsBanner(text, severity, serverName);
-    ttsAlerts.speaking = true;
-    ttsAlerts.activeUtterance = utter;
-
-    utter.onend = () => {
-      ttsAlerts.speaking = false;
-      ttsAlerts.activeUtterance = null;
-      hideTtsBanner();
-    };
-
-    utter.onerror = (err) => {
-      console.debug("[TTS] Utterance error or stopped:", err);
-      ttsAlerts.speaking = false;
-      ttsAlerts.activeUtterance = null;
-      hideTtsBanner();
-    };
-
-    window.speechSynthesis.speak(utter);
-  } catch (err) {
-    console.error("[TTS] Speech execution failed:", err);
-    ttsAlerts.speaking = false;
-    hideTtsBanner();
+    await drainLoop();
+  } finally {
+    ttsAlerts.draining = false;
   }
 }
 
+async function drainLoop() {
+  while (ttsAlerts.queue.length && ttsAlerts.enabled) {
+    const job = ttsAlerts.queue.shift();
+    if (Date.now() - job.at > QUEUE_MAX_AGE_MS) continue;  // stale: don't announce old news
+    let stopFn = () => { };
+    const current = { job, stopped: false, stop: () => { current.stopped = true; stopFn(); } };
+    ttsAlerts.current = current;
+    duckPageAudio(true);
+    try {
+      await runSpeechJob(job, current, fn => { stopFn = fn; });
+    } catch (err) {
+      console.debug("[TTS] job failed:", err);
+    } finally {
+      // Whatever happened, nothing from this job may keep sounding under the next one.
+      try { current.stop(); } catch (_) { }
+      if (ttsAlerts.activeAudio) { try { ttsAlerts.activeAudio.pause(); } catch (_) { } ttsAlerts.activeAudio = null; }
+      duckPageAudio(false);
+      ttsAlerts.current = null;
+    }
+    await sleep(GAP_BETWEEN_MS);
+  }
+}
 
-// --- Human voice (voice.py): a real Indian voice says a freshly written line in the right mood. ---
-// The server stitches the line from pre-recorded phrases (calm → urgent → angry → furious as it drags on), picks the
-// voice it has learned works best, and keeps every clip for training. The browser voice above is the fallback.
-const MOOD_WORDS = {calm: "Calm", urgent: "Urgent", angry: "Angry", furious: "Furious", relieved: "Relieved"};
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+// Preview videos (and any other media on the page) drop to 15% while the voice speaks, then come back.
+function duckPageAudio(on) {
+  document.querySelectorAll("video, audio").forEach(m => {
+    if (m === ttsAlerts.activeAudio) return;
+    if (on) {
+      if (m.dataset.duckedFrom === undefined) { m.dataset.duckedFrom = String(m.volume); m.volume = Math.min(m.volume, 0.15); }
+    } else if (m.dataset.duckedFrom !== undefined) {
+      m.volume = Number(m.dataset.duckedFrom); delete m.dataset.duckedFrom;
+    }
+  });
+}
+
+async function runSpeechJob(job, current, onStop) {
+  const { severity, ctx } = job;
+  const serverName = ctx.server || null;
+  await playChimeAndWait(severity, serverName);
+  if (current.stopped || !ttsAlerts.enabled) return;
+  if (ctx.test) {  // the voice check: just the browser voice, nothing recorded
+    await speakBrowserAndWait(job.text, severity, null, onStop);
+    return;
+  }
+  const ctl = new AbortController();
+  ttsAlerts.humanAbort = ctl;
+  onStop(() => ctl.abort());
+  const timer = setTimeout(() => ctl.abort(), 8000);
+  let clip = null;
+  try {
+    const res = await fetch("/api/voice/alert", {
+      method: "POST", headers: { "Content-Type": "application/json" }, signal: ctl.signal,
+      body: JSON.stringify({
+        severity, channels: (ctx.channels || []).filter(Boolean).slice(0, 20), server: serverName,
+        title: ctx.title ? String(ctx.title).slice(0, 500) : null, detail: ctx.detail ? String(ctx.detail).slice(0, 1000) : null,
+        minutes: ctx.minutes || null, subject: ctx.subject || null, style: ctx.style || null,
+      }),
+    });
+    if (res.ok) clip = await res.json();
+  } catch (_) { /* timeout or server down: the browser voice reads it */ }
+  clearTimeout(timer);
+  if (current.stopped || !ttsAlerts.enabled) return;
+  if (clip && clip.audio_url) {
+    const ok = await playClipAndWait(clip, severity, ctx.nodeIds || [], onStop);
+    if (ok || current.stopped) return;
+  }
+  await speakBrowserAndWait((clip && clip.text) || job.text, severity, serverName, onStop);
+}
+
+function playChimeAndWait(severity, serverName) {
+  playIndianBroadcastChime(severity, serverName);
+  return sleep(severity === "RECOVERY" ? 350 : 550);  // the three notes ring out before anyone speaks
+}
+
+function playClipAndWait(clip, severity, nodeIds, onStop) {
+  return new Promise(resolve => {
+    if (window.speechSynthesis) window.speechSynthesis.cancel();
+    const audio = new Audio(clip.audio_url);
+    ttsAlerts.activeAudio = audio;
+    ttsAlerts.speaking = true;
+    ttsAlerts.speechStartTime = Date.now();
+    ttsAlerts.lastPlay = { id: clip.play_id, startedAt: Date.now(), nodeIds, acked: false };
+    let settled = false;
+    const finish = ok => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(guard);
+      ttsAlerts.speaking = false;
+      if (ttsAlerts.activeAudio === audio) ttsAlerts.activeAudio = null;
+      clearTimeout(ttsAlerts.bannerTimer);  // leave a few seconds to rate it
+      ttsAlerts.bannerTimer = setTimeout(hideTtsBanner, ok ? 9000 : 0);
+      resolve(ok);
+    };
+    const guard = setTimeout(() => { try { audio.pause(); } catch (_) { } finish(true); }, 60000);
+    onStop(() => { try { audio.pause(); } catch (_) { } finish(true); });
+    showHumanBanner(clip, severity);
+    audio.onplay = () => { try { postPlay(clip.play_id, { heard: true }); } catch (_) { } };
+    audio.onended = () => finish(true);
+    audio.onerror = () => finish(false);
+    audio.play().catch(() => finish(false));  // autoplay blocked or bad file: the browser voice instead
+  });
+}
+
+// The browser's own voice: natural pace and pitch only (extreme settings are what make it sound robotic).
+function speakBrowserAndWait(text, severity, serverName, onStop) {
+  return new Promise(resolve => {
+    if (!window.speechSynthesis || !text) return resolve(false);
+    window.speechSynthesis.cancel();
+    const utter = new SpeechSynthesisUtterance(normalizeTextForSpeech(text));
+    const voice = getActiveVoice();
+    utter.lang = ttsAlerts.targetLanguage || "hi-IN";
+    if (voice) {
+      utter.voice = voice;
+      if (voice.lang) utter.lang = voice.lang;
+    }
+    const style = {
+      CRITICAL: [1.06, 1.0, 1.0], AGGRESSIVE: [1.1, 0.97, 1.0], WARNING: [0.98, 1.0, 0.9],
+      RECOVERY: [1.0, 1.03, 0.9]
+    }[severity] || [1.0, 1.0, 0.9];
+    [utter.rate, utter.pitch, utter.volume] = style;
+    const tuning = serverName ? ttsAlerts.getNodeProfile(serverName)?.audio_tuning : null;
+    if (tuning?.speech_rate) utter.rate = Math.min(1.15, Math.max(0.9, tuning.speech_rate));
+    if (tuning?.speech_pitch) utter.pitch = Math.min(1.08, Math.max(0.92, tuning.speech_pitch));
+    const tod = ttsAlerts.dynamicPolicy?.time_of_day || {};
+    if (tod.volume_boost) utter.volume = Math.min(1.0, utter.volume + tod.volume_boost);
+    ttsAlerts.speechStartTime = Date.now();
+    ttsAlerts.activeServerSpeaking = serverName || null;
+    ttsAlerts.speaking = true;
+    ttsAlerts.activeUtterance = utter;
+    showTtsBanner(text, severity, serverName);
+    let settled = false;
+    const finish = ok => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(guard);
+      ttsAlerts.speaking = false;
+      ttsAlerts.activeUtterance = null;
+      hideTtsBanner();
+      resolve(ok);
+    };
+    const guard = setTimeout(() => { window.speechSynthesis.cancel(); finish(true); }, 60000);
+    onStop(() => { window.speechSynthesis.cancel(); finish(true); });
+    utter.onend = () => finish(true);
+    utter.onerror = () => finish(false);
+    window.speechSynthesis.speak(utter);
+  });
+}
+
+// Kept for older callers: queue it like everything else.
+function speakHinglish(text, severity, skipChime = false, serverName = null) {
+  speakAlert(text, severity, { server: serverName });
+}
 
 async function speakAlert(fallbackText, severity, ctx = {}) {
   if (!ttsAlerts.enabled || !fallbackText) return;
   unlockAudioOnInteraction();
-
-  const serverName = ctx.server || null;
-  const profile = serverName ? ttsAlerts.getNodeProfile(serverName) : null;
+  let text = fallbackText;
+  const profile = ctx.server ? ttsAlerts.getNodeProfile(ctx.server) : null;
   const tuning = profile?.audio_tuning;
-
-  // Dynamic pacing & verbosity from learned MTTR data
-  let effectiveText = fallbackText;
   if (tuning?.verbosity === "brief" && severity === "WARNING") {  // never for a real outage
-    const srvShort = (serverName || "Server").split(".")[0];
+    const srvShort = (ctx.server || "Server").split(".")[0];
     const chs = (ctx.channels || []).filter(Boolean).slice(0, 3).join(", ");
-    effectiveText = `Anushrav Sir, ${srvShort}${chs ? ` (${chs})` : ""} par transient stall notice hua hai. Check kariye.`;
-  } else if (tuning?.learned_fix && ctx.durationActiveMs && ctx.durationActiveMs > ((profile?.hold_down_s || 5) * 1000)) {
-    effectiveText += ` Pichli baar iska fix tha: ${tuning.learned_fix}.`;
+    text = `Anushrav Sir, ${srvShort}${chs ? ` (${chs})` : ""} par chhota sa stall dikha hai. Ek baar check kar lijiye.`;
+  } else if (tuning?.learned_fix && severity !== "RECOVERY") {
+    text += ` Pichli baar iska fix tha: ${tuning.learned_fix}.`;
   }
-
-  playIndianBroadcastChime(severity, serverName);
-  const ctl = new AbortController();
-  const timer = setTimeout(() => ctl.abort(), 12000);
-  ttsAlerts.humanAbort = ctl;
-  try {
-    const res = await fetch("/api/voice/alert", {
-      method: "POST", headers: {"Content-Type": "application/json"}, signal: ctl.signal,
-      body: JSON.stringify({
-        severity, channels: (ctx.channels || []).filter(Boolean).slice(0, 20), server: serverName,
-        title: ctx.title ? String(ctx.title).slice(0, 500) : null, detail: ctx.detail ? String(ctx.detail).slice(0, 1000) : null,
-        minutes: ctx.minutes || null, subject: ctx.subject || null, style: ctx.style || null, text: effectiveText,
-        audio_tuning: tuning || null,
-      }),
-    });
-    clearTimeout(timer);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const clip = await res.json();
-    if (!ttsAlerts.enabled) return;
-    if (!clip.audio_url) { speakHinglish(clip.text || effectiveText, severity, true, serverName); return; }
-    playHumanClip(clip, severity, ctx.nodeIds || []);
-  } catch (err) {
-    clearTimeout(timer);
-    if (!ctl.cancelled && ttsAlerts.enabled) speakHinglish(effectiveText, severity, true, serverName);  // timeout or server error
-  }
+  enqueueSpeech({ text, severity, ctx, at: Date.now() });
 }
 
 function postPlay(playId, data) {
-  return fetch(`/api/voice/plays/${playId}`, {method: "POST", headers: {"Content-Type": "application/json"},
-    body: JSON.stringify(data)}).catch(() => {});
-}
-
-function playHumanClip(clip, severity, nodeIds) {
-  if (window.speechSynthesis) window.speechSynthesis.cancel();
-  if (ttsAlerts.activeAudio) { try { ttsAlerts.activeAudio.pause(); } catch (e) { } }
-  const audio = new Audio(clip.audio_url);
-  ttsAlerts.activeAudio = audio;
-  ttsAlerts.speaking = true;
-  ttsAlerts.lastPlay = {id: clip.play_id, startedAt: Date.now(), nodeIds, acked: false};
-  showHumanBanner(clip, severity);
-  audio.onplay = () => postPlay(clip.play_id, {heard: true});
-  audio.onended = () => {
-    ttsAlerts.speaking = false;
-    ttsAlerts.activeAudio = null;
-    clearTimeout(ttsAlerts.bannerTimer);  // leave a few seconds to rate it
-    ttsAlerts.bannerTimer = setTimeout(hideTtsBanner, 9000);
-  };
-  audio.onerror = () => {
-    ttsAlerts.speaking = false;
-    ttsAlerts.activeAudio = null;
-    speakHinglish(clip.text, severity, true);
-  };
-  audio.play().catch(() => speakHinglish(clip.text, severity, true));  // autoplay blocked: the browser voice
+  return fetch(`/api/voice/plays/${playId}`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data)
+  }).catch(() => { });
 }
 
 function showHumanBanner(clip, severity) {
@@ -583,7 +643,7 @@ function showHumanBanner(clip, severity) {
   }
   const mood = clip.style || "urgent";
   banner.className = `tts-live-banner tts-${severity.toLowerCase()} tts-mood-${mood}`;
-  const speaker = clip.name || "Bot";  // the voice's display name (Sumit, Om Prakash, … or Bot)
+  const speaker = clip.name || "Bot";  // the voice's display name (Himanshu, Manish, … or Bot)
   banner.innerHTML = `
     <span class="tts-live-icon tts-wave" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
     <div class="tts-live-content">
@@ -600,7 +660,7 @@ function showHumanBanner(clip, severity) {
   banner.querySelector(".tts-rate").onclick = e => {
     const b = e.target.closest("[data-rate]");
     if (!b) return;
-    postPlay(clip.play_id, {rating: Number(b.dataset.rate)});
+    postPlay(clip.play_id, { rating: Number(b.dataset.rate) });
     banner.querySelector(".tts-rate").innerHTML = `<span>${b.dataset.rate === "1" ? "Thanks, more like this." : "Got it, I'll change it."}</span>`;
     clearTimeout(ttsAlerts.bannerTimer);
     if (!ttsAlerts.speaking) ttsAlerts.bannerTimer = setTimeout(hideTtsBanner, 2500);
@@ -664,8 +724,8 @@ ttsAlerts.recordOutcome = function (node, outcome) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ node: node || "unknown", outcome })
-    }).catch(() => {});
-  } catch (_) {}
+    }).catch(() => { });
+  } catch (_) { }
 };
 
 // Server Warning Tracking Map: serverName -> { count, firstWarnAt, lastSpokenAt, escalated, channels }
@@ -728,6 +788,21 @@ function buildDynamicAggressiveVariants(srv, srvPhonetic, srvState, warnItems, n
 }
 
 // --- Auto-Adjust Evaluation Engine (Evaluates All Final Nodes Concurrently) ---
+// --- Announce like a real NOC: only what matters, once, and escalate only for what really persists ---
+const WARNING_HOLD_MS = 90 * 1000;       // a warning must last 90 s before it's spoken (most clear on their own)
+const SAME_ALERT_REPEAT_MS = 10 * 60000; // the same channel at the same level is not announced again for 10 min
+const ESCALATE_AFTER_MS = 5 * 60000;     // "angry" only after a server's warnings have lasted 5 min straight...
+const ESCALATE_REPEAT_MS = 5 * 60000;    // ...and at most once every 5 min
+const RECOVERY_MIN_MS = 2 * 60000;       // "good news" only after a spoken outage that lasted 2+ min
+ttsAlerts.spokenMemory = {};             // "channel|LEVEL" -> when it was last announced
+
+function spokenRecently(channel, level, now) {
+  return now - (ttsAlerts.spokenMemory[`${channel}|${level}`] || 0) < SAME_ALERT_REPEAT_MS;
+}
+function markSpoken(channels, level, now) {
+  channels.forEach(ch => { ttsAlerts.spokenMemory[`${ch}|${level}`] = now; });
+}
+
 ttsAlerts.evaluateAllFinalNodes = function () {
   if (!ttsAlerts.enabled) return;
   if (typeof G === "undefined" || !Array.isArray(G.nodes)) return;
@@ -806,11 +881,14 @@ ttsAlerts.evaluateAllFinalNodes = function () {
         if (!last.hasVoiced) {
           // Self-healed inside dynamic hold-down grace window! Suppressed false alert.
           ttsAlerts.recordOutcome(serverName || channel, "settled_alone");
-          console.info(`[TTS Auto-Tune] Stream ${channel} self-healed in ${Math.round(episodeDurationMs/1000)}s! Suppressed false alert.`);
+          console.info(`[TTS Auto-Tune] Stream ${channel} self-healed in ${Math.round(episodeDurationMs / 1000)}s! Suppressed false alert.`);
         } else {
-          // Real confirmed outage that was voiced
+          // Real confirmed outage that was voiced. Announce the recovery only if it was worth hearing about.
           ttsAlerts.recordOutcome(serverName || channel, "real_outage");
-          recoveredList.push({ nodeId: n.id, channel, key, serverName });
+          // "Wapas aa gaya" only after a real outage: a warning clearing (slow, glitches) isn't a comeback.
+          if (last.severity === "CRITICAL" && episodeDurationMs >= RECOVERY_MIN_MS) {
+            recoveredList.push({ nodeId: n.id, channel, key, serverName });
+          }
         }
         ttsAlerts.state[key] = { severity: "NONE", spokenAt: 0, title: "", text: "", acknowledged: false, warnCount: 0, episodeStartAt: 0, hasVoiced: false };
         continue;
@@ -829,7 +907,7 @@ ttsAlerts.evaluateAllFinalNodes = function () {
 
         // Dynamic Hold-Down Check (Silences transient micro-flappers)
         if (durationActiveMs < holdDownMs && !last.hasVoiced) {
-          console.debug(`[TTS Hold-Down] Holding alert for ${channel} (${Math.round(durationActiveMs/1000)}s / ${profile?.hold_down_s || 5}s)`);
+          console.debug(`[TTS Hold-Down] Holding alert for ${channel} (${Math.round(durationActiveMs / 1000)}s / ${profile?.hold_down_s || 5}s)`);
           continue;
         }
 
@@ -851,7 +929,7 @@ ttsAlerts.evaluateAllFinalNodes = function () {
       } else if (currentSeverity === "WARNING") {
         const durationActiveMs = now - (last.episodeStartAt || now);
         const profile = ttsAlerts.getNodeProfile(serverName, n.id);
-        const holdDownMs = (profile?.hold_down_s || 10) * 1000;
+        const holdDownMs = Math.max(WARNING_HOLD_MS, (profile?.hold_down_s || 10) * 1000);
 
         // Don't queue warnings if still within transient hold-down
         if (durationActiveMs < holdDownMs && !last.hasVoiced) {
@@ -881,7 +959,6 @@ ttsAlerts.evaluateAllFinalNodes = function () {
 
   // Evaluate Server Repeated Warnings & Interval Escalation
   const serverAggressiveAlerts = [];
-  const intervalMs = 45 * 1000; // 45s interval for repeated server warnings escalation
 
   for (const [srv, warnItems] of Object.entries(activeWarningsByServer)) {
     let srvState = ttsAlerts.serverWarningState[srv];
@@ -905,7 +982,8 @@ ttsAlerts.evaluateAllFinalNodes = function () {
       warnItems.forEach(it => srvState.channels.add(it.channel));
 
       const timeSinceLastSpoken = now - srvState.lastSpokenAt;
-      if (timeSinceLastSpoken >= intervalMs) {
+      const lastingMs = now - srvState.firstWarnAt;
+      if (lastingMs >= ESCALATE_AFTER_MS && timeSinceLastSpoken >= ESCALATE_REPEAT_MS) {
         // ESCALATE TO ANGRY AGGRESSIVE TONE!
         // "Anushrav tere ko dikhaai nahi de raha hai {server} down hai, Sahi kar!"
         const chList = Array.from(srvState.channels).slice(0, 3).join(", ");
@@ -941,11 +1019,20 @@ ttsAlerts.evaluateAllFinalNodes = function () {
   }
 
   // Handle Recoveries first if all clear
+  // Nothing already said in the last 10 min is said again (the same 8-channel warning 3 minutes later is noise).
+  pendingWarnings.splice(0, pendingWarnings.length, ...pendingWarnings.filter(w => !spokenRecently(w.channel, "WARNING", now)));
+  for (let i = recoveredList.length - 1; i >= 0; i--) {
+    if (spokenRecently(recoveredList[i].channel, "RECOVERY", now)) recoveredList.splice(i, 1);
+  }
+
   if (recoveredList.length > 0 && !pendingCriticals.length && !serverAggressiveAlerts.length && !pendingWarnings.length) {
+    markSpoken(recoveredList.map(r => r.channel), "RECOVERY", now);
     const recNames = recoveredList.slice(0, 2).map(r => r.channel).join(", ");
     const recMsg = `Anushrav Sir ji, Good news! Final ${recNames} ab wapas normal ho gaya hai. Stream smoothly chal rahi hai.`;
-    speakAlert(recMsg, "RECOVERY", {channels: recoveredList.map(r => r.channel), server: recoveredList[0].serverName,
-      subject: recoveredList.map(r => r.channel).sort().join(","), nodeIds: recoveredList.map(r => r.nodeId)});
+    speakAlert(recMsg, "RECOVERY", {
+      channels: recoveredList.map(r => r.channel), server: recoveredList[0].serverName,
+      subject: recoveredList.map(r => r.channel).sort().join(","), nodeIds: recoveredList.map(r => r.nodeId)
+    });
     return;
   }
 
@@ -966,11 +1053,14 @@ ttsAlerts.evaluateAllFinalNodes = function () {
       };
     });
 
+    markSpoken(pendingCriticals.map(c => c.channel), "CRITICAL", now);
     const msg = buildConsolidatedHinglishMessage(pendingCriticals, []);
     const first = pendingCriticals[0];
-    speakAlert(msg, "CRITICAL", {channels: pendingCriticals.map(c => c.channel), server: first.serverName,
+    speakAlert(msg, "CRITICAL", {
+      channels: pendingCriticals.map(c => c.channel), server: first.serverName,
       title: first.alertObj?.title, detail: first.alertObj?.text, subject: pendingCriticals.map(c => c.channel).sort().join(","),
-      nodeIds: pendingCriticals.map(c => c.nodeId)});
+      nodeIds: pendingCriticals.map(c => c.nodeId)
+    });
     return;
   }
 
@@ -991,11 +1081,14 @@ ttsAlerts.evaluateAllFinalNodes = function () {
       };
     });
 
+    markSpoken([`server:${agg.server}`], "AGGRESSIVE", now);
     const aggState = ttsAlerts.serverWarningState[agg.server] || {};
-    speakAlert(agg.message, "AGGRESSIVE", {channels: Array.from(aggState.channels || agg.items.map(w => w.channel)),
+    speakAlert(agg.message, "AGGRESSIVE", {
+      channels: Array.from(aggState.channels || agg.items.map(w => w.channel)),
       server: agg.server, title: agg.items[0]?.alertObj?.title, detail: agg.items[0]?.alertObj?.text,
       minutes: aggState.firstWarnAt ? (now - aggState.firstWarnAt) / 60000 : null, subject: `server:${agg.server}`,
-      nodeIds: agg.items.map(w => w.nodeId)});
+      nodeIds: agg.items.map(w => w.nodeId)
+    });
     return;
   }
 
@@ -1015,11 +1108,14 @@ ttsAlerts.evaluateAllFinalNodes = function () {
       };
     });
 
+    markSpoken(pendingWarnings.map(w => w.channel), "WARNING", now);
     const msg = buildConsolidatedHinglishMessage([], pendingWarnings);
     const w0 = pendingWarnings[0];
-    speakAlert(msg, "WARNING", {channels: pendingWarnings.map(w => w.channel), server: getNodeServer(w0.nodeId, null),
+    speakAlert(msg, "WARNING", {
+      channels: pendingWarnings.map(w => w.channel), server: getNodeServer(w0.nodeId, null),
       title: w0.alertObj?.title, detail: w0.alertObj?.text, subject: pendingWarnings.map(w => w.channel).sort().join(","),
-      nodeIds: pendingWarnings.map(w => w.nodeId)});
+      nodeIds: pendingWarnings.map(w => w.nodeId)
+    });
   }
 };
 
@@ -1039,7 +1135,7 @@ ttsAlerts.acknowledge = function (nodeId) {
   const lp = ttsAlerts.lastPlay;
   if (lp && !lp.acked && lp.nodeIds.includes(nodeId)) {  // how fast the operator reacted: the voice worked
     lp.acked = true;
-    postPlay(lp.id, {acked_after_s: (Date.now() - lp.startedAt) / 1000});
+    postPlay(lp.id, { acked_after_s: (Date.now() - lp.startedAt) / 1000 });
   }
   Object.keys(ttsAlerts.state).forEach(k => {
     if (k.startsWith(`${nodeId}|`)) {
@@ -1089,16 +1185,19 @@ ttsAlerts.stopAudio = function () {
 };
 
 ttsAlerts.testVoice = function () {
+  // A voice check that sounds like a check, never like a real "channel is back" alert; not recorded as a play.
   if (!ttsAlerts.enabled) return;
   unlockAudioOnInteraction();
   loadAvailableVoices();
-  const voice = getActiveVoice();
-  const vName = voice ? voice.name : "Indian Synthesizer";
-  const testMsg = `Anushrav - Voice test: ${vName} active hai. Final alert par order tone aur warning par request tone set hai.`;
-  speakAlert(testMsg, "RECOVERY", {style: "relieved", channels: [], subject: "voice-test"});
+  enqueueSpeech({
+    text: "Voice check. Alerts ab isi awaaz mein aayenge.", severity: "RECOVERY",
+    ctx: { test: true, subject: "voice-test" }, at: Date.now()
+  });
 };
 
 ttsAlerts.cancel = function () {
+  ttsAlerts.queue = [];
+  if (ttsAlerts.current) ttsAlerts.current.stop();
   if (ttsAlerts.humanAbort) { ttsAlerts.humanAbort.cancelled = true; ttsAlerts.humanAbort.abort(); }
   ttsAlerts.stopAudio();
   ttsAlerts.speaking = false;

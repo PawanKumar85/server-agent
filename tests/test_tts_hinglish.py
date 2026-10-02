@@ -10,7 +10,8 @@ class TestFinalNodeHinglishTTS(unittest.TestCase):
         self.assertIn("IndiaNews", msg)
         self.assertTrue(msg.startswith("Anushrav Sir -"))
         self.assertIn("down ho chuka hai", msg)
-        self.assertIn("404 error", msg)
+        self.assertIn("four zero four", msg)
+        self.assertNotIn(".!", msg)
         self.assertIn("Delay bilkul mat karo", msg)
 
     def test_stale_media_warning_request_tone(self):
@@ -42,10 +43,11 @@ class TestFinalNodeHinglishTTS(unittest.TestCase):
 
     def test_repeated_server_warning_aggressive_tone(self):
         msg = format_hinglish_final_announcement("gtcnews", "AGGRESSIVE", "", server="cdn.OTTLive.co.in")
-        self.assertIn("cdn [dot] OTTLive [dot] co [dot] in", msg)
+        self.assertIn("C-D-N down hai", msg)  # the server by its short name
+        self.assertNotIn("[dot]", msg)
         self.assertTrue(msg.startswith("Anushrav tere ko dikhaai nahi de raha hai"))
         self.assertIn("down hai, Sahi kar!", msg)
-        self.assertEqual(msg, "Anushrav tere ko dikhaai nahi de raha hai cdn [dot] OTTLive [dot] co [dot] in down hai, Sahi kar!")
+        self.assertEqual(msg, "Anushrav tere ko dikhaai nahi de raha hai C-D-N down hai, Sahi kar!")
 
 
 if __name__ == "__main__":

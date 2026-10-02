@@ -124,9 +124,9 @@ class GlitchProbe:
                 if gone:
                     glitch("QUALITY_DROPPED", len(gone), f"missing: {', '.join(gone)}")
             st["variants"] = (history + [sorted(names)])[-3:]
-            (low_bw, low_url), (top_bw, top_url) = variants[0], variants[-1]
+            (_, low_url), (top_bw, top_url) = variants[0], variants[-1]
         else:
-            low_bw = top_bw = 0
+            top_bw = 0
             low_url = top_url = url
         features["top_kbps"] = round(top_bw / 1000, 1) if top_bw else None
 

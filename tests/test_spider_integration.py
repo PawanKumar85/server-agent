@@ -31,6 +31,16 @@ class Scripted:
         return NodeHealth(node_id=node["id"], check_type="HLS", up=up, latency_ms=10, error=None if up else "HTTP_TIMEOUT")
 
 
+def next_cycle(manager, finals):
+    """One 30 s cycle. Cycles here run back to back, so the health cached in the previous one (kept a few seconds
+    to share checks between spiders) is cleared first, as it would have expired in real time."""
+    import health
+    import spider
+    health.clear_health_caches()
+    spider.clear_spider_caches()
+    return manager.run_cycle(finals)
+
+
 @pytest.fixture
 def world(driver, graph, tmp_path):
     """Returns run(down=[...], finals=[...]) -> {final_name: SpiderReport}, checking invariants each cycle."""
@@ -40,7 +50,7 @@ def world(driver, graph, tmp_path):
 
     def run(down=(), finals=("final",)):
         checker.down = {domain(d) for d in down}
-        result = manager.run_cycle([domain(f) for f in finals])
+        result = next_cycle(manager, [domain(f) for f in finals])
         # invariants after every cycle: one SpiderRun per FinalLink, each with exactly one AT
         rows = driver.execute_query(
             "MATCH (s:SpiderRun) WHERE s.finalLinkId ENDS WITH $t OPTIONAL MATCH (s)-[a:AT]->() "
@@ -217,7 +227,7 @@ def test_one_spider_per_final_and_shared_nodes_checked_once(driver, graph, world
 def test_shared_node_is_pinged_by_one_spider_and_reused_by_the_rest(graph, world):
     graph({"f1": ["FinalLink"], "f2": ["FinalLink"], "f3": ["FinalLink"], "trans": ["Transcoding"], "main": ["MainInput"]},
           [("main", "FEEDS", "trans"), ("trans", "PRODUCES", "f1"), ("trans", "PRODUCES", "f2"), ("trans", "PRODUCES", "f3")])
-    events = world.manager.run_cycle([domain(f) for f in ("f1", "f2", "f3")]).events
+    events = next_cycle(world.manager, [domain(f) for f in ("f1", "f2", "f3")]).events
     for node in (domain("trans"), domain("main")):
         checks = [e for e in events if e["kind"] == "check" and e["node"] == node]
         owners = [e for e in checks if not e.get("shared_from")]
@@ -264,7 +274,7 @@ def test_saving_the_real_topology_leaves_test_fixtures_alone(driver, graph):
 
 def test_events_timeline_is_recorded_in_order(graph, world):
     graph(CHAIN, CHAIN_EDGES)
-    events = world.manager.run_cycle([domain("final")]).events
+    events = next_cycle(world.manager, [domain("final")]).events
     kinds = [e["kind"] for e in events]
     assert kinds[0] in ("move", "check") and kinds[-1] == "finish"
     times = [e["t"] for e in events]
@@ -370,10 +380,10 @@ def test_incident_correlates_the_channel_chain(driver, graph, tmp_path):
                              l=json.dumps([{"url": url, "role": role, "channel": "c"}]))
     checker = UrlScripted()
     manager = SpiderManager(driver, checker=checker, metrics=Metrics(tmp_path / "m.db"))
-    manager.run_cycle([domain("final")])
+    next_cycle(manager, [domain("final")])
     checker.stale = {domain("backup")}           # only the Backup input goes stale
     # Inputs are checked on the upstream leg (every other cycle): 2 failed checks in a row take 4 cycles.
-    results = [manager.run_cycle([domain("final")]) for _ in range(4)]
+    results = [next_cycle(manager, [domain("final")]) for _ in range(4)]
     [entry] = manager.metrics.incidents(domain("backup"))
     assert entry["category"] == "STALE_MEDIA" and entry["failedUrls"][0]["segmentAgeS"] == 45.0
     [corr] = entry["correlation"]
@@ -388,10 +398,10 @@ def test_cycle_ranks_the_root_cause_and_attaches_it_to_the_incident(driver, grap
     graph(CHAIN, CHAIN_EDGES)
     checker = Scripted()
     manager = SpiderManager(driver, checker=checker, metrics=Metrics(tmp_path / "m.db"))
-    manager.run_cycle([domain("final")])
+    next_cycle(manager, [domain("final")])
     checker.down = {domain("trans"), domain("final")}  # the transcoder breaks; the final follows
-    manager.run_cycle([domain("final")])
-    result = manager.run_cycle([domain("final")])      # 2nd failure: incidents open, ranking attached
+    next_cycle(manager, [domain("final")])
+    result = next_cycle(manager, [domain("final")])      # 2nd failure: incidents open, ranking attached
     [group] = result.ranking
     assert group["ranking"][0]["node"] == domain("trans")
     entry = manager.metrics.incidents(domain("trans"))[-1]

@@ -89,6 +89,15 @@
             <span class="theme-txt">System</span>
           </button>
         </div>
+        <!-- Language Switcher (EN / Hinglish) -->
+        <div class="lang-segmented" id="lang-segmented" role="radiogroup" aria-label="Language">
+          <button type="button" class="lang-seg-btn active" data-lang="en" title="English Interface">
+            <span class="lang-txt">EN</span>
+          </button>
+          <button type="button" class="lang-seg-btn" data-lang="hi" title="Hinglish Interface (Hindi + English)">
+            <span class="lang-txt">🇮🇳 Hinglish</span>
+          </button>
+        </div>
         <!-- Voice Alerts (Hinglish TTS for Final Node) -->
         <div class="tts-ctrl-group" style="display:inline-flex;align-items:center;gap:4px;">
           <button type="button" class="btn active" id="btn-tts-toggle" title="Final Node Hinglish Voice Alerts: ON (Click to Mute, Shift+Click to Test)">
@@ -1225,6 +1234,7 @@
   <!-- The page's scripts, in order (classic scripts sharing one scope; boot.js starts everything). -->
   <script src="/static/chart.umd.min.js"></script>  <!-- Chart.js 4.4.1, served locally -->
   <script src="/static/core.js"></script>
+  <script src="/static/hinglish.js"></script>
   <script src="/static/sys-usage.js"></script>
   <script src="/static/canvas.js"></script>
   <script src="/static/node-detail.js"></script>

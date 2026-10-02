@@ -619,8 +619,8 @@ def start_run(final_ids: Optional[List[str]] = None, source: str = "manual") -> 
                     _last_predictions = preds
                     high = [p for p in preds if p["band"] in ("HIGH", "CRITICAL")]
                     hub.publish("predictions", {"predictions": preds, "highRisk": high})
-                except Exception as pe:
-                    pass  # prediction errors must never break the health pipeline
+                except Exception as pe:  # must never break the health pipeline, but must not vanish either
+                    print(f"[predictions] skipped: {type(pe).__name__}: {pe}")
             threading.Thread(target=_run_predictions, daemon=True).start()
         except Exception as e:  # surfaced to every page instead of a silent failure
             hub.publish("error", {"run": run_id, "message": f"{type(e).__name__}: {e}"})

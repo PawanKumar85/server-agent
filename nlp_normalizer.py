@@ -14,7 +14,8 @@ PHONETIC_ACRONYMS: Dict[str, str] = {
     r"\bottlive\b": "O-T-T Live",
     r"\bhls\b": "H-L-S",
     r"\brtmp\b": "R-T-M-P",
-    r"\bm3u8\b": "M-3-U-8 playlist",
+    r"\bm3u8\b(?!\s+playlist)": "M-3-U-8 playlist",
+    r"\bm3u8\b": "M-3-U-8",
     r"\bicmp\b": "I-C-M-P ping",
     r"\brtt\b": "R-T-T",
     r"\bscte-?35\b": "S-C-T-E thirty five ad cue",
@@ -28,11 +29,11 @@ PHONETIC_ACRONYMS: Dict[str, str] = {
 
 # HTTP status codes phonetic mappings in Hindi/Hinglish
 HTTP_STATUS_MAP: Dict[str, str] = {
-    r"\b404\b": "four zero four not found",
-    r"\b500\b": "five hundred internal server error",
-    r"\b502\b": "five zero two bad gateway",
-    r"\b503\b": "five zero three service unavailable",
-    r"\b504\b": "five zero four gateway timeout",
+    r"\b404\b": "four zero four",  # the sentence already says what it means ("404 error", "404 aa raha hai")
+    r"\b500\b": "five hundred",
+    r"\b502\b": "five zero two",
+    r"\b503\b": "five zero three",
+    r"\b504\b": "five zero four",
 }
 
 # Number conversions in common telemetry units
@@ -46,21 +47,24 @@ UNIT_PATTERNS = [
 
 
 def normalize_domain_url(text: str) -> str:
-    """Expands domain dots to phonetic [dot] with clean letter spacing."""
+    """Says servers the way people do, by their short name: "cdn.ottlive.co.in" and "cdn [dot] ottlive [dot] co
+    [dot] in" both become "cdn"; "cdn.ottlive.co.in/Rang Manch" becomes the channel, "Rang Manch". Numbers are
+    numbers: 98.5 -> "98 point 5". An IP address is read digit group by digit group."""
     if not text:
         return ""
+    text = re.sub(r"\b([A-Za-z0-9_-]+)(?:\s*\[\s*dot\s*\]\s*[A-Za-z0-9_-]+)+", r"\1", text)  # already phonetic
+    text = re.sub(r"\b[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)+/(?=[A-Z])", "", text)  # host/Channel -> Channel
 
-    def _replace_url(match):
+    def _replace(match):
         raw = match.group(0)
-        # Avoid double replacing
-        if "[dot]" in raw:
-            return raw
-        # Replace dot with phonetic pause
-        return raw.replace(".", " [dot] ")
+        num = re.fullmatch(r"(\d+)\.(\d+)([a-zA-Z%]*)", raw)
+        if num:  # a decimal, not a domain (units are expanded later)
+            return f"{num.group(1)} point {num.group(2)}{num.group(3)}"
+        if re.fullmatch(r"\d+(?:\.\d+){3}(?::\d+)?", raw):  # an IP address
+            return raw.replace(".", " ")
+        return raw.split(".")[0]  # a host: its short name
 
-    # Match domain-like patterns: e.g. cdn.ottlive.co.in or 192.168.1.1
-    domain_re = r'([a-zA-Z0-9_\-]+(?:\.[a-zA-Z0-9_\-]+)+(?::\d+)?)'
-    return re.sub(domain_re, _replace_url, text)
+    return re.sub(r"[A-Za-z0-9_\-]+(?:\.[A-Za-z0-9_\-]+)+(?::\d+)?", _replace, text)
 
 
 def normalize_hinglish_speech(text: str) -> str:

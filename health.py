@@ -163,8 +163,8 @@ async def media_problem(client: httpx.AsyncClient, sem: asyncio.Semaphore, url: 
 
 
 HEALTH_CACHE_ENABLED = os.environ.get("HEALTH_CACHE_ENABLED", "1") not in ("0", "false", "False")
-URL_CACHE_TTL_S = float(os.environ.get("URL_CACHE_TTL_S", "15.0"))
-ICMP_CACHE_TTL_S = float(os.environ.get("ICMP_CACHE_TTL_S", "15.0"))
+URL_CACHE_TTL_S = float(os.environ.get("URL_CACHE_TTL_S", "5.0"))  # dedupe within one cycle only
+ICMP_CACHE_TTL_S = float(os.environ.get("ICMP_CACHE_TTL_S", "5.0"))
 
 _URL_CACHE: Dict[str, Tuple[float, UrlCheck]] = {}
 _URL_IN_FLIGHT: Dict[str, asyncio.Future] = {}

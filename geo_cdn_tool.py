@@ -124,6 +124,21 @@ def haversine_distance_km(lat1: float, lon1: float, lat2: float, lon2: float) ->
     return round(EARTH_RADIUS_KM * c, 2)
 
 
+DNS_TIMEOUT_S = 2.0
+
+
+def _resolve_ip(host: str) -> Optional[str]:
+    """The host's IP, or None; never waits more than DNS_TIMEOUT_S (a slow DNS must not stall a report)."""
+    from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
+    pool = ThreadPoolExecutor(1)
+    try:
+        return pool.submit(socket.gethostbyname, host).result(timeout=DNS_TIMEOUT_S)
+    except (FutureTimeout, Exception):
+        return None
+    finally:
+        pool.shutdown(wait=False)
+
+
 def resolve_server_geolocation(host_or_domain: str) -> dict:
     """Resolves IP and geographic coordinates for a given server hostname or domain."""
     clean_host = (host_or_domain or "").split("/")[0].strip().lower()
@@ -131,14 +146,10 @@ def resolve_server_geolocation(host_or_domain: str) -> dict:
     if clean_host in SERVER_GEO_CACHE:
         cached = dict(SERVER_GEO_CACHE[clean_host])
         cached["host"] = clean_host
+        cached.setdefault("estimated", True)  # the table above is hand-entered, not measured
         return cached
 
-    # Attempt DNS resolution
-    ip = None
-    try:
-        ip = socket.gethostbyname(clean_host)
-    except Exception:
-        pass
+    ip = _resolve_ip(clean_host)
 
     # Heuristic regional inference from channel name or domain keywords
     inferred_city = "Mumbai"
@@ -164,14 +175,15 @@ def resolve_server_geolocation(host_or_domain: str) -> dict:
 
     geo = {
         "host": clean_host,
-        "ip": ip or "127.0.0.1",
+        "ip": ip,  # None when DNS didn't answer (never a made-up address)
         "city": inferred_city,
         "region": inferred_region,
         "country": "India",
         "lat": inferred_lat,
         "lon": inferred_lon,
-        "isp": "Broadband / Datacenter",
-        "asn": "AS-UNKNOWN"
+        "isp": "unknown",
+        "asn": "unknown",
+        "estimated": True,  # guessed from the host name: shown as an estimate, never as a measurement
     }
     SERVER_GEO_CACHE[clean_host] = geo
     return geo

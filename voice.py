@@ -61,7 +61,11 @@ PROBLEMS = [
      "pehle input feed aa rahi hai ki nahi dekho, phir encoder restart karo"),
     (r"unreachable|refused|timeout|connect", "server se connection hi nahi ho raha",
      "server ping karo aur nginx ya service restart karo, na chale toh backup pe switch karo"),
-    (r"behind|latency|delay|slow", "stream live se peeche chal rahi hai, delay badh raha hai",
+    (r"latency|response time|rtt|jitter|slow to respond", "server se jawab dheere aa raha hai, latency badhi hui hai",
+     "server ka load aur network dekho, zarurat ho toh traffic doosre server pe bhejo"),
+    (r"uneven segment|segment length", "video ke tukde barabar lambai ke nahi aa rahe",
+     "encoder ki segment settings aur input feed dekho"),
+    (r"behind|delay|slow", "stream live se peeche chal rahi hai, delay badh raha hai",
      "encoder ka CPU aur network dekho, zarurat ho toh bitrate thoda kam karo"),
     (r"glitch|skipped|discontinuit|drop", "video mein jhatke aa rahe hain, glitches dikh rahe hain",
      "input feed aur encoder ke dropped frames dekho, network loss bhi check karo"),
@@ -108,6 +112,30 @@ TEMPLATES: Dict[str, List[str]] = {
     ],
 }
 
+# Lines for problems that are NOT outages (slow, glitches, failover...): the channel is still on air, so they never say
+# "band", "down" or "off air". Used for WARNING and for warnings that have lasted long (AGGRESSIVE).
+WARN_TEMPLATES: Dict[str, List[str]] = {
+    "calm": TEMPLATES["calm"],
+    "urgent": [
+        "{name}, suno! {ch} pe {problem}. Abhi chal raha hai, par jaldi dekho.",
+        "Arre {name}, {ch} pe {mins} minute se {problem}. {srv} check karo.",
+    ],
+    "angry": [
+        "{name}, {ch} pe {mins} minute se {problem}! Koi dekh raha hai ya nahi? {srv} check karo.",
+        "Arre {name}! {ch} pe abhi tak {problem}. Kab tak chalega ye? {srv} dekho!",
+    ],
+    "furious": [
+        "{name}! {ch} pe {mins} minute se {problem}! Ab bahut ho gaya, {srv} abhi dekho!",
+        "{name}, bas! {ch} pe kab se {problem}! Pehle {srv} theek karo!",
+    ],
+    "relieved": ["{name}, {ch} ab theek chal raha hai. Problem khatam."],
+}
+ROUGH_WARN_TEMPLATES: Dict[str, List[tuple]] = {
+    "angry": [("mild", "Abe {name}! {ch} pe {mins} minute se {problem}, kya bakwaas hai? {srv} check kar!")],
+    "furious": [("mild", "Abe {name}! {ch} pe {mins} minute se {problem}! Nalayak log, {srv} abhi dekh!"),
+                ("strong", "Kya chutiyapa hai {name}? {ch} pe {mins} minute se {problem}! {srv} abhi theek kar!")],
+}
+
 # Swearing on high alerts (angry: mild words; furious: the level's words). Set on the Learning page or
 # VOICE_PROFANITY=off|mild|strong. Everyday office cussing only: abuse of someone's mother/sister, caste, religion,
 # gender or anything sexual is never said (BLOCKED guards the lines).
@@ -142,8 +170,9 @@ ROUGH_TEMPLATES: Dict[str, List[tuple]] = {
 
 # The name each voice is shown under (instead of its recording speaker id), and moods shown as one person whatever
 # the voice. Change on the Learning page or with POST /api/voice/settings; any other voice is shown as BOT_NAME.
-VOICE_PEOPLE = {"rohan": "Sumit", "aditya": "Himanshu", "soham": "Deepanshu", "kabir": "Deepanshu", "shubh": "Manish"}
-MOOD_PEOPLE = {"calm": "Om Prakash"}  # the polite tone
+VOICE_PEOPLE = {"rohan": "Himanshu", "aditya": "Himanshu", "soham": "Deepanshu", "kabir": "Deepanshu", "shubh": "Manish",
+                "hi-rohan": "Himanshu", "hi-pratham": "Himanshu"}
+MOOD_PEOPLE = {"calm": "Manish"}  # the polite tone
 BOT_NAME = "Bot"
 
 SCHEMA = """
@@ -488,6 +517,8 @@ class Voice:
         self.operator = operator or os.getenv("VOICE_OPERATOR_NAME", "Anushrav")
         self.rng = rng or random.Random()
         self.library = VoiceLibrary(self)
+        from voice_neural import neural_voice  # natural local voice for what the library can't say
+        self.neural = neural_voice if neural_voice.available() else None
 
     @property
     def profanity(self) -> str:
@@ -529,14 +560,16 @@ class Voice:
                                  learned_fix=event.get("learned_fix") or "", usual_root=event.get("usual_root") or "",
                                  server=event.get("server") or "")}
 
-    def template_line(self, style: str, f: dict) -> tuple:
-        """A hand-written line (rough ones at the chosen swear level) plus the steps, for the browser voice."""
+    def template_line(self, style: str, f: dict, outage: bool = True) -> tuple:
+        """A hand-written line (rough ones at the chosen swear level) plus the steps. outage=False: the channel is still
+        on air (slow, glitches, ...), so the line describes the problem and never says it is down."""
         level = self.profanity
+        rough_bank, bank, kind = (ROUGH_TEMPLATES, TEMPLATES, "") if outage else (ROUGH_WARN_TEMPLATES, WARN_TEMPLATES, "warn:")
         rough = []
-        if level != "off" and style in ROUGH_TEMPLATES:
-            rough = [t for lv, t in ROUGH_TEMPLATES[style] if lv == "mild" or (level == "strong" and style == "furious")]
-        options = rough or TEMPLATES[style]
-        ids = [f"template:{'rough:' + level + ':' if rough else ''}{style}:{i}" for i in range(len(options))]
+        if level != "off" and style in rough_bank:
+            rough = [t for lv, t in rough_bank[style] if lv == "mild" or (level == "strong" and style == "furious")]
+        options = rough or bank[style]
+        ids = [f"template:{kind}{'rough:' + level + ':' if rough else ''}{style}:{i}" for i in range(len(options))]
         pick = self.store.choose(ids, self.store.arm_stats(style, "writer"), rng=self.rng)
         text = options[ids.index(pick)].format(**f) + " " + (
             RELIEVED_TAIL if style == "relieved" else f"Ye karo... {f['fix']}.")
@@ -552,14 +585,32 @@ class Voice:
         speaker = self.library.pick_voice(style)
         audio, text, missing, seconds = self.library.compose(event, style, speaker, repeats, self.rng)
         clip_id, cached, writer = None, False, "library"
+        if audio and missing:  # the recordings can't say all of it (e.g. this channel's name): a generic line
+            audio = None
         if audio:
             sha = hashlib.sha256(f"library|{speaker}|{style}|{text}".encode()).hexdigest()
             clip = self.store.find_clip(sha)
             cached = bool(clip)
             clip_id = clip["id"] if clip else self.store.add_clip(text, speaker, style, None, None, audio, sha, writer,
                                                                   codec="flac", duration_s=seconds)
-        else:  # nothing recorded for this mood: the browser voice reads a hand-written line
-            text, writer = self.template_line(style, self.facts(event, style, repeats, speaker))
+        else:  # a hand-written line with the real names, said by the local neural voice (or read by the browser)
+            text, writer = self.template_line(style, self.facts(event, style, repeats, speaker),
+                                              outage=severity == "CRITICAL" or (severity == "RECOVERY" and event.get("was_outage", True)))
+            if self.neural is not None:
+                speaker = self.neural.voice_for(style)
+                sha = hashlib.sha256(f"neural|{speaker}|{style}|{text}".encode()).hexdigest()
+                clip = self.store.find_clip(sha)
+                cached = bool(clip)
+                if clip:
+                    clip_id = clip["id"]
+                else:
+                    try:
+                        wav = self.neural.synthesize(text, style)
+                    except Exception as e:  # a voice problem must never lose the alert: the browser reads it
+                        print(f"[voice] neural voice failed: {type(e).__name__}: {e}")
+                        wav = None
+                    if wav:
+                        clip_id = self.store.add_clip(text, speaker, style, None, None, wav, sha, writer)
         shown = self.display_name(style, speaker)
         play_id = self.store.add_play(clip_id, subject, severity, style, speaker, writer, event.get("channels") or [], shown)
         return {"play_id": play_id, "clip_id": clip_id, "text": text, "speaker": speaker, "style": style, "name": shown,

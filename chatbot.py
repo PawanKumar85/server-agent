@@ -85,7 +85,9 @@ SYSTEM = (
     "- get_learned_memory: Facts, patterns and past outages you have learned\n"
     "- query_graph: Read-only Cypher on the graph, for questions the other tools don't answer (counts, filters, paths)\n"
     "Call the matching tool whenever the user's intent matches. When the context has facts, corrections or "
-    "similar past outages you learned, use them and say so."
+    "similar past outages you learned, use them and say so.\n"
+    "Language handling: If the user writes in Hindi or Hinglish, or asks for explanation in Hinglish, answer "
+    "conversationally in natural, clear MCR/NOC engineer Hinglish (mixing Hindi and English technical terms naturally)."
 )
 
 # The model calls this when someone asks for a report; the server resolves the name and the page shows a link

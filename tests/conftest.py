@@ -32,6 +32,20 @@ def domain(name: str) -> str:
 
 
 @pytest.fixture(autouse=True)
+def fresh_health_caches():
+    """The URL / ICMP / node health caches are process-wide: clear them so no test sees the previous test's result."""
+    import health
+    import spider
+    from routes import notifications
+    notifications._announcement_rotation.clear()  # wording rotates per server: start each test at the first line
+    health.clear_health_caches()
+    spider.clear_spider_caches()
+    yield
+    health.clear_health_caches()
+    spider.clear_spider_caches()
+
+
+@pytest.fixture(autouse=True)
 def no_real_dns(monkeypatch):
     """DomainNode.server_ip does a DNS lookup; keep unit tests offline and deterministic."""
     import nodes

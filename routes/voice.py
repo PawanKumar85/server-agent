@@ -120,7 +120,8 @@ def voice_settings(body: VoiceSettings):
         srv.voice.store.set_setting("profanity", body.profanity)
     if body.voices is not None or body.moods is not None:
         saved = json.loads(srv.voice.store.setting("people", "") or "{}")
-        known = {v for st in STYLES.values() for v in st["voices"]} | set(srv.voice.people()["voices"])
+        from voice_neural import VOICES as NEURAL_VOICES
+        known = {v for st in STYLES.values() for v in st["voices"]} | set(srv.voice.people()["voices"]) | set(NEURAL_VOICES)
         for key, given, allowed in (("voices", body.voices, known), ("moods", body.moods, set(STYLES))):
             for k, name in (given or {}).items():
                 if k not in allowed:

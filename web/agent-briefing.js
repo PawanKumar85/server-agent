@@ -59,22 +59,23 @@ function agentWarningParts(w) {
 const agentList = names => names.length <= 2 ? names.join(" and ") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
 
 function agentBriefing(chs, warnings) {
+  const isHi = typeof getLanguage === "function" && getLanguage() === "hi";
   const off = chs.filter(c => c.state === "off").map(c => c.name);
   const backup = chs.filter(c => c.state === "backup").map(c => c.name);
   const parts = [];
-  if (!chs.length) return "No channels yet. Add stream links in Links to start monitoring.";
+  if (!chs.length) return isHi ? "Abhi koi channels nahi hain. Links mein jakar stream links add karein." : "No channels yet. Add stream links in Links to start monitoring.";
   if (!off.length && !backup.length) {
-    parts.push(`All ${chs.length} channels are on air from their Main inputs.`);
+    parts.push(isHi ? `Sabhi ${chs.length} channels apne Main input se smoothly live chal rahe hain.` : `All ${chs.length} channels are on air from their Main inputs.`);
   } else {
-    parts.push(`${chs.length - off.length} of ${chs.length} channels are on air.`);
-    if (off.length) parts.push(`${agentList(off)} ${off.length === 1 ? "is" : "are"} off air.`);
-    if (backup.length) parts.push(`${agentList(backup)} ${backup.length === 1 ? "is" : "are"} running on backup.`);
+    parts.push(isHi ? `${chs.length} mein se ${chs.length - off.length} channels live hain.` : `${chs.length - off.length} of ${chs.length} channels are on air.`);
+    if (off.length) parts.push(isHi ? `${agentList(off)} band (off air) ${off.length === 1 ? "hai" : "hain"}.` : `${agentList(off)} ${off.length === 1 ? "is" : "are"} off air.`);
+    if (backup.length) parts.push(isHi ? `${agentList(backup)} backup link par chal ${backup.length === 1 ? "raha hai" : "rahe hain"}.` : `${agentList(backup)} ${backup.length === 1 ? "is" : "are"} running on backup.`);
   }
   const top = (agentView.ranking[0] || {}).ranking?.[0];
-  if (top) parts.push(`The likely root cause is ${agentShort(top.node)}.`);
+  if (top) parts.push(isHi ? `Sabse zyada sambhavit root cause ${agentShort(top.node)} hai.` : `The likely root cause is ${agentShort(top.node)}.`);
   if (warnings.length && !off.length && !backup.length) {  // during an outage the briefing sticks to it
     const w = warnings[0];
-    parts.push(`${agentShort(w.node)}'s ${w.phrase}.`);
+    parts.push(isHi ? `${agentShort(w.node)} par alert: ${typeof trHinglish === "function" ? trHinglish(w.phrase) : w.phrase}.` : `${agentShort(w.node)}'s ${w.phrase}.`);
   }
   return parts.join(" ");
 }

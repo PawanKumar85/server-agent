@@ -919,6 +919,7 @@ def cdn_recommendations_html(nodes: List[dict], node_id: Optional[str] = None) -
         return (
             f"<h2 id='cdn_recommendations'>🌐 CDN Capacity Planning & Edge Placement Recommendations</h2>"
             f"<p class='muted'>Facility location optimization computed across server geolocations, physical Haversine distances, and stream latency bottlenecks.</p>"
+            f"<p class='muted' style='border-left:3px solid #f59e0b;padding-left:8px'>⚠ Locations are <b>estimated</b> from server names, not measured (no IP-geolocation lookup is done). Treat distances, fiber stretch and placement advice as rough guidance only.</p>"
             f"{top_html}"
             f"<table class='grid'><tr><th>Rank</th><th>Candidate Datacenter PoP</th><th>Region</th><th>Est. Latency Saving</th><th>Target Broadcast Channels</th></tr>"
             f"{''.join(rows)}</table>"
@@ -941,7 +942,8 @@ def geo_matrix_html(nodes: List[dict], node_id: Optional[str] = None) -> str:
             lat_ms = (n.get("raw") or {}).get("lastLatencyMs") or (n.get("latency") or "—")
             srv_rows.append(
                 f"<tr><td><span class='mono'><b>{_e(nid)}</b></span></td><td>{_e(n.get('role', 'Node'))}</td>"
-                f"<td>{_e(geo.get('city'))}, {_e(geo.get('country'))}</td>"
+                f"<td>{_e(geo.get('city'))}, {_e(geo.get('country'))}"
+                f"{' <span class=small muted>(est.)</span>' if geo.get('estimated') else ''}</td>"
                 f"<td class='mono small'>{geo.get('lat')}, {geo.get('lon')}</td>"
                 f"<td>{_e(geo.get('isp'))} <span class='small muted'>({_e(geo.get('asn'))})</span></td>"
                 f"<td><b>{lat_ms} ms</b></td></tr>"
@@ -964,6 +966,7 @@ def geo_matrix_html(nodes: List[dict], node_id: Optional[str] = None) -> str:
         return (
             f"<h2 id='geo_matrix'>📏 Server Geolocation & Speed-of-Light Network Stretch</h2>"
             f"<p class='muted'>Physical distances computed via Haversine great-circle formula against optical fiber latency limits (~10ms/1,000km RTT).</p>"
+            f"<p class='muted' style='border-left:3px solid #f59e0b;padding-left:8px'>⚠ Locations are <b>estimated</b> from server names, not measured (no IP-geolocation lookup is done). Treat distances, fiber stretch and placement advice as rough guidance only.</p>"
             f"<h4>Active Server Geolocation Nodes</h4>"
             f"<table class='grid'><tr><th>Server / Host</th><th>Role</th><th>City</th><th>Coordinates</th><th>ISP / Network</th><th>Latency</th></tr>"
             f"{''.join(srv_rows)}</table>"
