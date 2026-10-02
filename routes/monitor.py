@@ -407,3 +407,29 @@ def uptime(slots: int = Query(32, ge=4, le=240), slot: int = Query(60, ge=10, le
 def rca_ranking():
     """The likely root cause of each current failure group, ranked (computed now from the live state)."""
     return srv.current_ranking()
+
+
+@router.get("/api/cdn/recommendations")
+def cdn_recommendations():
+    """Facility location algorithm: suggests optimal future CDN Edge PoP deployments based on server distances and latency."""
+    from geo_cdn_tool import analyze_best_cdn_locations
+    from telemetry_pool import telemetry_pool
+    nodes = telemetry_pool.get_nodes(srv.driver)
+    nodes_list = list(nodes.values()) if nodes else []
+    return analyze_best_cdn_locations(nodes_list)
+
+
+@router.get("/api/cdn/geo-matrix")
+def cdn_geo_matrix():
+    """Returns server geolocations, Haversine physical distances, and speed-of-light optical fiber stretch."""
+    from geo_cdn_tool import analyze_best_cdn_locations
+    from telemetry_pool import telemetry_pool
+    nodes = telemetry_pool.get_nodes(srv.driver)
+    nodes_list = list(nodes.values()) if nodes else []
+    analysis = analyze_best_cdn_locations(nodes_list)
+    return {
+        "server_distance_matrix": analysis.get("server_distance_matrix", []),
+        "top_recommendation": analysis.get("top_recommendation", {}),
+        "active_nodes_evaluated": analysis.get("active_nodes_evaluated", 0)
+    }
+

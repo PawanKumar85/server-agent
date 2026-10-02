@@ -874,8 +874,184 @@ tr.drop td{background:#fee2e2}details{margin-top:10px}summary{cursor:pointer;col
 .ai-btn{font:inherit;font-size:14px;font-weight:600;padding:8px 16px;border:0;border-radius:8px;background:#ff6d5a;color:#fff;cursor:pointer}.ai-btn:disabled{opacity:.6}
 .ai-out{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:0 18px;margin-top:10px}.ai-out:empty{display:none}.ai-out h4{color:var(--text);font-size:14px;text-transform:none;letter-spacing:0;margin:16px 0 6px}.ai-out li{margin:3px 0 3px 18px}
 nav.toc{columns:3;font-size:12.5px}nav.toc a{color:#2563eb;text-decoration:none;display:block}
+.rec-box{background:var(--panel);border:1px solid var(--line);border-left:4px solid #2563eb;border-radius:10px;padding:14px 18px;margin:14px 0}
+.rec-title{font-size:15px;font-weight:700;color:#1e40af;margin-bottom:6px;display:flex;align-items:center;gap:8px}
+.pill-optimal{background:#dcfce7;color:#166534;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:600;display:inline-block}
+.pill-degraded{background:#fef3c7;color:#92400e;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:600;display:inline-block}
+.pill-bad{background:#fee2e2;color:#991b1b;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:600;display:inline-block}
 @media print{body{background:#fff}section.node,figure{border-color:#ccc}details{display:none}.noprint{display:none}}
 """
+
+
+def cdn_recommendations_html(nodes: List[dict], node_id: Optional[str] = None) -> str:
+    """Renders CDN Edge PoP placement recommendations and capacity planning blueprint."""
+    try:
+        from geo_cdn_tool import analyze_best_cdn_locations
+        analysis = analyze_best_cdn_locations(nodes)
+        top = analysis.get("top_recommendation") or {}
+        pops = analysis.get("ranked_cdn_locations", [])
+        insight = analysis.get("strategic_insight", "")
+
+        rows = []
+        for idx, pop in enumerate(pops, 1):
+            ch_str = ", ".join(pop.get("covered_channels", [])[:4]) or "All regional feeds"
+            is_top = (idx == 1)
+            row_style = "style='background:#eff6ff;font-weight:600;'" if is_top else ""
+            badge = "<span class='badge' style='--c:#2563eb;'>TOP PICK</span>" if is_top else f"#{idx}"
+            rows.append(
+                f"<tr {row_style}><td>{badge}</td><td><b>{_e(pop.get('name'))}</b><div class='small muted'>{_e(pop.get('datacenter_tier'))}</div></td>"
+                f"<td>{_e(pop.get('city'))} ({_e(pop.get('region'))})</td>"
+                f"<td><b class='ok'>-{pop.get('expected_latency_savings_ms', 0)} ms</b></td>"
+                f"<td class='small'>{_e(ch_str)}</td></tr>"
+            )
+
+        top_html = ""
+        if top:
+            top_html = (
+                f"<div class='rec-box'>"
+                f"<div class='rec-title'>🌟 Optimal Edge PoP Placement: {_e(top.get('name'))}</div>"
+                f"<p style='margin:4px 0 8px;'><b>Expected Video Latency Reduction:</b> <span class='ok' style='font-size:16px;font-weight:700;'>~{top.get('expected_latency_savings_ms')} ms</span> "
+                f"| <b>Datacenter Tier:</b> {_e(top.get('datacenter_tier'))} | <b>Location:</b> {_e(top.get('city'))}, {_e(top.get('region'))}</p>"
+                f"<p class='muted small' style='margin:0;'><b>Strategic Rationale:</b> {_e(insight)}</p>"
+                f"</div>"
+            )
+
+        return (
+            f"<h2 id='cdn_recommendations'>🌐 CDN Capacity Planning & Edge Placement Recommendations</h2>"
+            f"<p class='muted'>Facility location optimization computed across server geolocations, physical Haversine distances, and stream latency bottlenecks.</p>"
+            f"{top_html}"
+            f"<table class='grid'><tr><th>Rank</th><th>Candidate Datacenter PoP</th><th>Region</th><th>Est. Latency Saving</th><th>Target Broadcast Channels</th></tr>"
+            f"{''.join(rows)}</table>"
+        )
+    except Exception as e:
+        return f"<p class='muted'>CDN recommendations unavailable: {_e(str(e))}</p>"
+
+
+def geo_matrix_html(nodes: List[dict], node_id: Optional[str] = None) -> str:
+    """Renders server geolocations, Haversine physical distance, and optical fiber network stretch."""
+    try:
+        from geo_cdn_tool import resolve_server_geolocation, analyze_best_cdn_locations
+        analysis = analyze_best_cdn_locations(nodes)
+        matrix = analysis.get("server_distance_matrix", [])
+
+        srv_rows = []
+        for n in nodes[:15]:
+            nid = n.get("id") or n.get("domain") or "server"
+            geo = resolve_server_geolocation(nid)
+            lat_ms = (n.get("raw") or {}).get("lastLatencyMs") or (n.get("latency") or "—")
+            srv_rows.append(
+                f"<tr><td><span class='mono'><b>{_e(nid)}</b></span></td><td>{_e(n.get('role', 'Node'))}</td>"
+                f"<td>{_e(geo.get('city'))}, {_e(geo.get('country'))}</td>"
+                f"<td class='mono small'>{geo.get('lat')}, {geo.get('lon')}</td>"
+                f"<td>{_e(geo.get('isp'))} <span class='small muted'>({_e(geo.get('asn'))})</span></td>"
+                f"<td><b>{lat_ms} ms</b></td></tr>"
+            )
+
+        dist_rows = []
+        for row in matrix[:10]:
+            st = row.get("stretch", {})
+            eff = st.get("efficiency", "OPTIMAL")
+            eff_class = "pill-optimal" if "OPTIMAL" in eff else ("pill-bad" if "TROMBONE" in eff else "pill-degraded")
+            dist_rows.append(
+                f"<tr><td><b>{_e(row.get('from_city'))}</b> <span class='mono small'>({_e(row.get('from_node'))})</span></td>"
+                f"<td><b>{_e(row.get('to_city'))}</b> <span class='mono small'>({_e(row.get('to_node'))})</span></td>"
+                f"<td><b>{row.get('distance_km')} km</b></td>"
+                f"<td>{st.get('observed_rtt_ms')} ms</td>"
+                f"<td class='muted'>{st.get('theoretical_fiber_rtt_ms')} ms</td>"
+                f"<td><span class='{eff_class}'>{_e(eff)}</span></td></tr>"
+            )
+
+        return (
+            f"<h2 id='geo_matrix'>📏 Server Geolocation & Speed-of-Light Network Stretch</h2>"
+            f"<p class='muted'>Physical distances computed via Haversine great-circle formula against optical fiber latency limits (~10ms/1,000km RTT).</p>"
+            f"<h4>Active Server Geolocation Nodes</h4>"
+            f"<table class='grid'><tr><th>Server / Host</th><th>Role</th><th>City</th><th>Coordinates</th><th>ISP / Network</th><th>Latency</th></tr>"
+            f"{''.join(srv_rows)}</table>"
+            f"<h4 style='margin-top:18px;'>Inter-Server Physical Distance & Optical Fiber Stretch</h4>"
+            f"<table class='grid'><tr><th>From Node</th><th>To Node</th><th>Physical Distance</th><th>Observed RTT</th><th>Ideal Fiber RTT</th><th>Route Efficiency</th></tr>"
+            f"{''.join(dist_rows)}</table>"
+        )
+    except Exception as e:
+        return f"<p class='muted'>Geolocation matrix unavailable: {_e(str(e))}</p>"
+
+
+def incident_postmortem_html(nodes: List[dict], node_id: Optional[str] = None) -> str:
+    """Renders executive incident postmortem summary using graph-based TextRank NLP."""
+    try:
+        from incident_summarizer import textrank_summarizer
+        all_logs = []
+        for n in nodes:
+            if node_id and n.get("id") != node_id:
+                continue
+            for e in (n.get("log") or [])[-30:]:  # the newest 30 (the log is oldest first)
+                kind = e.get("type") or ""
+                if kind not in ("OUTAGE", "RECOVERY", "ESCALATED"):
+                    continue
+                cat = (e.get("category") or "").replace("_", " ").lower()
+                detail = (e.get("lastError") or "")[:160] if kind != "RECOVERY" else (
+                    f"back up after {e['durationS']} s" if e.get("durationS") is not None else "back up")
+                all_logs.append(f"{n.get('id')}: {kind.lower()} at {str(e.get('timestamp', ''))[:16]}"
+                                + (f" ({cat})" if cat else "") + (f": {detail}" if detail else ""))
+
+        if not all_logs:
+            all_logs = [
+                f"{n.get('id')}: Continuous telemetry operational, all delivery streams nominal"
+                for n in nodes[:5]
+            ]
+
+        summary = textrank_summarizer.summarize_incident(all_logs, max_sentences=3, channel="Stream Network")
+        findings_li = "".join(f"<li>{_e(f)}</li>" for f in summary.get("key_findings", []))
+
+        return (
+            f"<h2 id='incident_postmortem'>🧠 NLP Incident Postmortem & Operational Findings</h2>"
+            f"<div class='rec-box' style='border-left-color:#8b5cf6;'>"
+            f"<div class='rec-title' style='color:#6d28d9;'>📋 {_e(summary.get('headline'))}</div>"
+            f"<p style='margin:6px 0 10px;font-size:13.5px;line-height:1.6;'>{_e(summary.get('executive_summary'))}</p>"
+            f"<b>Key Operational Findings (Extracted via TextRank):</b>"
+            f"<ul style='margin:6px 0 0 16px;padding:0;'>{findings_li}</ul>"
+            f"</div>"
+        )
+    except Exception as e:
+        return f"<p class='muted'>Incident summary unavailable: {_e(str(e))}</p>"
+
+
+def ml_hazard_forecast_html(nodes: List[dict], node_id: Optional[str] = None) -> str:
+    """Renders Weibull Renewal Process survival analysis and failure hazard forecast."""
+    try:
+        from predictor import fit_weibull, weibull_conditional_failure_prob
+        rows = []
+        for n in nodes[:10]:
+            if node_id and n.get("id") != node_id:
+                continue
+            # Real gaps between this node's outages, and the time since its last one.
+            starts = sorted(datetime.fromisoformat(str(e["timestamp"]).replace("Z", "+00:00")).timestamp()
+                            for e in (n.get("log") or []) if e.get("type") == "OUTAGE" and e.get("timestamp"))
+            gaps = [b - a for a, b in zip(starts, starts[1:]) if b > a]
+            if len(gaps) < 3:
+                rows.append(f"<tr><td><span class='mono'><b>{_e(n.get('id'))}</b></span></td><td>{_e(n.get('role', 'Node'))}</td>"
+                            f"<td colspan='4' class='muted'>Not enough outages yet to forecast ({len(starts)} recorded)</td></tr>")
+                continue
+            scale, k = fit_weibull(gaps)
+            since_last = max(0.0, datetime.now(timezone.utc).timestamp() - starts[-1])
+            cond_prob = weibull_conditional_failure_prob(scale, k, since_last, 3600)
+            hazard_badge = "<span class='pill-optimal'>LOW HAZARD</span>" if cond_prob < 0.25 else ("<span class='pill-degraded'>MODERATE</span>" if cond_prob < 0.60 else "<span class='pill-bad'>HIGH RISK</span>")
+            rows.append(
+                f"<tr><td><span class='mono'><b>{_e(n.get('id'))}</b></span></td>"
+                f"<td>{_e(n.get('role', 'Node'))}</td>"
+                f"<td>{round(scale / 3600, 1)} hrs</td>"
+                f"<td>k={k} ({'Wear-out' if k > 1 else 'Random'})</td>"
+                f"<td><b>{round(cond_prob * 100, 1)}%</b></td>"
+                f"<td>{hazard_badge}</td></tr>"
+            )
+
+        return (
+            f"<h2 id='ml_hazard'>📈 Machine Learning Reliability & Failure Hazard Forecast</h2>"
+            f"<p class='muted'>Weibull Survival Analysis modeling hardware and transcoder aging to forecast next-hour failure probability.</p>"
+            f"<table class='grid'><tr><th>Node / Server</th><th>Role</th><th>Weibull Scale (λ)</th><th>Shape (k)</th><th>Next 1-Hr Failure Prob</th><th>Hazard Status</th></tr>"
+            f"{''.join(rows)}</table>"
+        )
+    except Exception as e:
+        return f"<p class='muted'>ML forecast unavailable: {_e(str(e))}</p>"
 
 
 def build_report(driver, node_id: Optional[str] = None, monitor: Optional[dict] = None,
@@ -903,6 +1079,10 @@ def build_report(driver, node_id: Optional[str] = None, monitor: Optional[dict] 
             return None
         body = [f"<h1>Node report: {_e(node_id)}</h1><p class='muted'>Stream Graph · generated {_time(now)} · {span_label}</p>",
                 findings_html(insights(data, monitor, node_id)), ranking_html([g for g in ranking(data) if node_id in g["nodes"]]),
+                cdn_recommendations_html(nodes, node_id),
+                geo_matrix_html(nodes, node_id),
+                ml_hazard_forecast_html([node], node_id),
+                incident_postmortem_html([node], node_id),
                 analysis_html(node_id, live),
                 _img(chart_history(history, "latency_ms", f"HTTP latency, {span_label} (IST)", "ms"), "latency history"),
                 _img(chart_history(history, "rtt_ms", f"ICMP RTT, {span_label} (IST)", "ms"), "rtt history"),
@@ -928,9 +1108,17 @@ def build_report(driver, node_id: Optional[str] = None, monitor: Optional[dict] 
         f"{'ON every ' + str(monitor.get('interval')) + ' s' if monitor.get('enabled') else 'OFF'} · last run "
         f"{_time(((monitor.get('last_run') or {}).get('at')))}</p>",
         "<div class='cards'>" + "".join(f"<div class='card'><b>{v}</b><span>{_e(k)}</span></div>" for k, v in cards) + "</div>",
-        findings_html(insights(data, monitor)), ranking_html(ranking(data)), analysis_html(None, live),
+        findings_html(insights(data, monitor)), ranking_html(ranking(data)),
+        cdn_recommendations_html(nodes),
+        geo_matrix_html(nodes),
+        ml_hazard_forecast_html(nodes),
+        incident_postmortem_html(nodes),
+        analysis_html(None, live),
         "<nav class='toc noprint'>" + "".join(f"<a href='#{a}'>{t}</a>" for a, t in [
-            ("findings", "Key findings"), ("analysis", "AI deep analysis"), ("overview", "Overview charts"), ("channels", "Channels"), ("incidents", "Incidents & errors"),
+            ("findings", "Key findings"), ("cdn_recommendations", "CDN Placement Recommendations"),
+            ("geo_matrix", "Geolocation & Distance Matrix"), ("ml_hazard", "ML Reliability & Hazard"),
+            ("incident_postmortem", "NLP Incident Postmortem"), ("analysis", "AI deep analysis"),
+            ("overview", "Overview charts"), ("channels", "Channels"), ("incidents", "Incidents & errors"),
             ("similarity", "Embeddings"), ("servers", "Every server"), ("spiders", "Every spider")]) + "</nav>",
         "<h2 id='overview'>Overview</h2>",
         _img(chart_history(history, "latency_ms", f"HTTP latency per server, {span_label} (IST)", "ms"), "latency history"),

@@ -271,3 +271,18 @@ def test_sync_embeddings_button_keeps_recent_incidents(client, monkeypatch):
                         lambda source, clear_logs, all_logs=False: seen.update(clear=clear_logs, all=all_logs) or {})
     assert client.post("/api/embeddings/sync?clear_logs=true").status_code == 200
     assert seen == {"clear": True, "all": False}  # only entries past the 90-day retention are archived
+
+
+def test_downloaded_report_includes_cdn_recommendations_and_geo_intelligence():
+    """Verify that generated and downloaded reports include complete info, suggestions, and recommendations."""
+    page = report.build_report(Driver(), actions="", live=False)
+    # Complete info & recommendations must be present in offline/downloaded HTML
+    assert "cdn_recommendations" in page
+    assert "Optimal Edge PoP Placement" in page
+    assert "geo_matrix" in page
+    assert "Server Geolocation & Speed-of-Light Network Stretch" in page
+    assert "ml_hazard" in page
+    assert "Weibull Survival Analysis" in page
+    assert "incident_postmortem" in page
+    assert "NLP Incident Postmortem" in page
+

@@ -46,6 +46,57 @@ ANCHOR_PROTOTYPES = {
     ],
 }
 
+
+class FastTfidfClassifier:
+    """Zero-dependency sub-millisecond TF-IDF vector space classifier for operational sentiments."""
+    def __init__(self, prototypes: Dict[str, List[str]]):
+        self.categories = list(prototypes.keys())
+        self.vocab: Dict[str, int] = {}
+        all_docs = []
+        for cat, docs in prototypes.items():
+            for d in docs:
+                toks = self._tokenize(d)
+                all_docs.append(toks)
+                for t in toks:
+                    if t not in self.vocab:
+                        self.vocab[t] = len(self.vocab)
+        N = max(len(all_docs), 1)
+        self.idf = np.zeros(len(self.vocab), dtype="float32")
+        for toks in all_docs:
+            for t in set(toks):
+                self.idf[self.vocab[t]] += 1.0
+        self.idf = np.log((N + 1.0) / (self.idf + 1.0)) + 1.0
+
+        self.proto_vecs: Dict[str, np.ndarray] = {}
+        for cat, docs in prototypes.items():
+            cat_vec = np.zeros(len(self.vocab), dtype="float32")
+            for d in docs:
+                for t in self._tokenize(d):
+                    cat_vec[self.vocab[t]] += self.idf[self.vocab[t]]
+            norm = np.linalg.norm(cat_vec)
+            self.proto_vecs[cat] = cat_vec / (norm if norm > 0 else 1.0)
+
+    def _tokenize(self, text: str) -> List[str]:
+        tokens = re.findall(r'[a-zA-Z0-9_\u0900-\u097F]+', (text or "").lower())
+        bigrams = [f"{tokens[i]} {tokens[i+1]}" for i in range(len(tokens) - 1)]
+        return tokens + bigrams
+
+    def predict_scores(self, text: str) -> Dict[str, float]:
+        toks = self._tokenize(text)
+        vec = np.zeros(len(self.vocab), dtype="float32")
+        for t in toks:
+            if t in self.vocab:
+                vec[self.vocab[t]] += self.idf[self.vocab[t]]
+        norm = np.linalg.norm(vec)
+        if norm == 0:
+            return {c: 0.0 for c in self.categories}
+        vec = vec / norm
+        return {c: float(np.dot(vec, p)) for c, p in self.proto_vecs.items()}
+
+
+fast_tfidf_model = FastTfidfClassifier(ANCHOR_PROTOTYPES)
+
+
 class DynamicLexicalModel:
     """Dynamic ML-driven lexical feature extractor and keyword miner for incident sentiment.
 
@@ -121,34 +172,19 @@ class DynamicLexicalModel:
             }
 
             try:
-                import text_embedding
-                centroids = {}
-                for cat, prototypes in ANCHOR_PROTOTYPES.items():
-                    proto_vecs = text_embedding.encode(prototypes)
-                    if len(proto_vecs) > 0:
-                        c_vec = np.mean(proto_vecs, axis=0)
-                        norm = np.linalg.norm(c_vec)
-                        centroids[cat] = c_vec / (norm if norm != 0 else 1.0)
-
-                cat_names = list(centroids.keys())
-                centroid_matrix = np.array([centroids[c] for c in cat_names])
-
-                cand_vecs = text_embedding.encode(candidates)
-                similarity_matrix = np.dot(cand_vecs, centroid_matrix.T)
-
+                cat_names = list(ANCHOR_PROTOTYPES.keys())
                 learned_keywords = {c: [] for c in cat_names}
-                learned_weights = {c: {} for c in cat_names}
 
-                for idx, term in enumerate(candidates):
-                    sims = similarity_matrix[idx]
-                    best_cat_idx = int(np.argmax(sims))
-                    best_score = float(sims[best_cat_idx])
-                    best_cat = cat_names[best_cat_idx]
+                for term in candidates:
+                    scores = fast_tfidf_model.predict_scores(term)
+                    if not scores:
+                        continue
+                    best_cat = max(scores, key=scores.get)
+                    best_score = float(scores[best_cat])
+                    sorted_scores = sorted(scores.values())
+                    margin = float(sorted_scores[-1] - sorted_scores[-2]) if len(sorted_scores) > 1 else best_score
 
-                    sorted_sims = np.sort(sims)
-                    margin = float(sorted_sims[-1] - sorted_sims[-2]) if len(sorted_sims) > 1 else best_score
-
-                    if best_score >= 0.22 or (best_score >= 0.16 and margin >= 0.05):
+                    if best_score >= 0.15 or (best_score >= 0.10 and margin >= 0.03):
                         weight = float(best_score * (1.0 + 0.6 * margin))
                         learned_keywords[best_cat].append((term, weight))
 
@@ -334,17 +370,22 @@ class TransformedAlert(BaseModel):
     recommended_tone: Dict[str, Any]
 
 
-class SentimentTransformer:
-    """Classifies telemetry incident sentiment and transforms notification speech & acoustics."""
 
-    _instance: Optional["SentimentTransformer"] = None
+class SentimentTransformer:
+    """Affective computing and sentiment transformation engine.
+
+    Classifies operational alerts into distinct affective states and modulates
+    speech synthesis parameters (acoustic prosody) using TF-IDF and neural prosody mapping.
+    """
+
+    _instance = None
     _lock = threading.Lock()
 
     def __init__(self):
-        self._anchor_embeddings: Optional[Dict[str, np.ndarray]] = None
-        self._embed_lock = threading.Lock()
         self.lexical_model = dynamic_lexical_model
-        self.prosody_mapper = neural_prosody_mapper
+        self.prosody_mapper = NeuralProsodyMapper()
+        self._anchor_embeddings = None
+        self._embed_lock = threading.Lock()
 
     @classmethod
     def get_instance(cls) -> "SentimentTransformer":
@@ -353,30 +394,8 @@ class SentimentTransformer:
                 cls._instance = cls()
             return cls._instance
 
-    def _ensure_anchor_embeddings(self) -> Optional[Dict[str, np.ndarray]]:
-        """Precomputes centroid embeddings for each emotional anchor class."""
-        if self._anchor_embeddings is not None:
-            return self._anchor_embeddings
-
-        with self._embed_lock:
-            if self._anchor_embeddings is not None:
-                return self._anchor_embeddings
-            try:
-                import text_embedding
-                anchors = {}
-                for category, sentences in ANCHOR_PROTOTYPES.items():
-                    vecs = text_embedding.encode(sentences)
-                    if vecs is not None and len(vecs) > 0:
-                        centroid = np.mean(vecs, axis=0)
-                        norm = np.linalg.norm(centroid)
-                        anchors[category] = centroid / (norm if norm != 0 else 1.0)
-                self._anchor_embeddings = anchors
-                return self._anchor_embeddings
-            except Exception:
-                return None
-
     def analyze_sentiment(self, text: str, failure_count: int = 1, is_repeated: bool = False) -> SentimentResult:
-        """Analyzes text sentiment, emotion, valence, and urgency."""
+        """Analyzes text sentiment, emotion, valence, and urgency via fast TF-IDF and neural prosody."""
         raw_text = (text or "").strip().lower()
         if not raw_text:
             return SentimentResult(
@@ -388,21 +407,8 @@ class SentimentTransformer:
                 scores={"angry": 0.0, "critical": 0.0, "warning": 0.0, "positive": 0.0}
             )
 
-        # 1. Semantic Embedding Similarity via sentence-transformers
-        scores: Dict[str, float] = {"angry": 0.0, "critical": 0.0, "warning": 0.0, "positive": 0.0}
-        anchors = self._ensure_anchor_embeddings()
-
-        if anchors:
-            try:
-                import text_embedding
-                query_vec = text_embedding.encode([raw_text])
-                if query_vec is not None and len(query_vec) > 0:
-                    q = query_vec[0]
-                    for cat, anchor_vec in anchors.items():
-                        sim = float(np.dot(q, anchor_vec))
-                        scores[cat] = max(0.0, sim)
-            except Exception:
-                pass
+        # 1. Fast Sub-millisecond TF-IDF Vector Space Scoring
+        scores = fast_tfidf_model.predict_scores(raw_text)
 
         # 2. Dynamic ML Lexical Feature Boosts
         ml_boosts = self.lexical_model.score_text_ml(raw_text)
@@ -417,16 +423,11 @@ class SentimentTransformer:
         top_cat = max(scores, key=scores.get)
         top_score = scores[top_cat]
 
-        # Valence & Urgency calculation
-        # angry: valence -0.85, urgency 0.95
-        # critical: valence -0.90, urgency 1.00
-        # warning: valence -0.40, urgency 0.60
-        # positive: valence +0.85, urgency 0.15
         valence_map = {"angry": -0.85, "critical": -0.90, "warning": -0.40, "positive": 0.85}
         urgency_map = {"angry": 0.95, "critical": 1.00, "warning": 0.60, "positive": 0.15}
         emotion_map = {"angry": "anger", "critical": "urgency", "warning": "concern", "positive": "relief"}
 
-        if top_score < 0.20:
+        if top_score < 0.10:
             top_cat = "neutral"
             top_emotion = "neutral"
             val = 0.0
@@ -482,9 +483,10 @@ class SentimentTransformer:
         query_vec = None
         try:
             import text_embedding
-            q_enc = text_embedding.encode([reason or severity or "alert"])
-            if q_enc is not None and len(q_enc) > 0:
-                query_vec = q_enc[0]
+            if getattr(text_embedding, "_model", None) is not None:
+                q_enc = text_embedding.encode([reason or severity or "alert"])
+                if q_enc is not None and len(q_enc) > 0:
+                    query_vec = q_enc[0]
         except Exception:
             pass
 

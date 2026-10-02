@@ -238,12 +238,14 @@ def format_hinglish_final_announcement(
     failure_count: int = 1
 ) -> str:
     """Formats an authoritative broadcast Hinglish speech announcement with dynamic AI switching,
-    anti-repetition rotation, and historical incident context from learning memory.
+    anti-repetition rotation, historical incident context from learning memory, and NLP phonetic normalization.
     """
-    ch = channel or "Channel"
+    from nlp_normalizer import normalize_hinglish_speech, phonetic_channel_name
+
+    ch = phonetic_channel_name(channel) if channel else "Channel"
     sev = (severity or "CRITICAL").upper()
     r = (reason or "").lower()
-    raw_srv = server or ch or "server"
+    raw_srv = server or channel or "server"
     srv = _format_server_phonetic(raw_srv)
 
     # Determine rotation index per target & severity so repeated alerts dynamically switch
@@ -279,7 +281,7 @@ def format_hinglish_final_announcement(
             f"Anushrav bhai, abhi tak so rahe ho kya? {srv} par continuous alert aa raha hai! Sahi kar turant, failover route activate karo!",
             f"Anushrav sir! Team ko turant bolo {srv} check kare, channels drop hone wale hain! Sahi kar jaldi!"
         ]
-        return agg_variants[idx % len(agg_variants)]
+        return normalize_hinglish_speech(agg_variants[idx % len(agg_variants)])
 
     # 2. RECOVERY (Good News / Normal) - Dynamic variations
     if sev == "RECOVERY":
@@ -288,7 +290,7 @@ def format_hinglish_final_announcement(
             f"Anushrav Sir ji, System update: Final node {ch} full 100% operational health par restore ho chuka hai. All green.",
             f"Anushrav Sir ji, Stream recovery confirmed! {ch} live playback ab stable chal raha hai aur latency normal hai.",
         ]
-        return rec_variants[idx % len(rec_variants)]
+        return normalize_hinglish_speech(rec_variants[idx % len(rec_variants)])
 
     # Infer specific issue description
     if "404" in r or "missing" in r:
@@ -316,7 +318,7 @@ def format_hinglish_final_announcement(
             f"Anushrav Sir - Final {ch} offline chala gaya hai! {issue}. Encoders check karke broadcast turant live lijiye!",
             f"Anushrav Sir - Attention! Final node {ch} feed abruptly band ho chuki hai. Upstream encoder restart karein bina delay ke!",
         ]
-        return crit_variants[idx % len(crit_variants)]
+        return normalize_hinglish_speech(crit_variants[idx % len(crit_variants)])
 
     # 4. WARNING (Polite Request Tone) - Dynamic variations
     if sev == "WARNING":
@@ -326,9 +328,9 @@ def format_hinglish_final_announcement(
             f"Anushrav Sir ji, Final node {ch} stream broadcast se halki peeche chal rahi hai. Request hai ki stream drop hone se pehle check kar lijiye.",
             f"Anushrav Sir ji, Monitoring update: Final {ch} par minor performance drop notice hua hai. Please pipeline verify karwa lijiye.",
         ]
-        return warn_variants[idx % len(warn_variants)]
+        return normalize_hinglish_speech(warn_variants[idx % len(warn_variants)])
 
-    return f"Anushrav Sir ji - Final {ch} update: {issue}"
+    return normalize_hinglish_speech(f"Anushrav Sir ji - Final {ch} update: {issue}")
 
 
 class TTSAnnouncementRequest(BaseModel):
@@ -402,4 +404,21 @@ def get_node_context_endpoint(node: str = "", channel: str = ""):
     return get_past_incident_context(node=node, channel=channel)
 
 
+class IncidentSummarizeRequest(BaseModel):
+    logs: List[str] = Field(..., description="List of incident log lines or telemetry alerts")
+    channel: Optional[str] = Field("", description="Optional channel name")
+    server: Optional[str] = Field("", description="Optional server or origin name")
+    max_sentences: Optional[int] = Field(3, description="Maximum summary sentences to extract")
 
+
+@router.post("/api/incidents/summarize")
+def summarize_incident_endpoint(req: IncidentSummarizeRequest):
+    """Generates an executive incident postmortem summary using graph-based TextRank NLP."""
+    from incident_summarizer import textrank_summarizer
+    summary = textrank_summarizer.summarize_incident(
+        incident_logs=req.logs,
+        max_sentences=req.max_sentences or 3,
+        channel=req.channel or "",
+        server=req.server or ""
+    )
+    return summary

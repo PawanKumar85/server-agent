@@ -135,6 +135,41 @@ def score_node_live(node: dict) -> Tuple[float, str]:
     return round(score, 4), reason
 
 
+def fit_weibull(intervals: List[float]) -> Tuple[float, float]:
+    """Fits Weibull distribution (scale lambda, shape k) from failure intervals in seconds."""
+    if len(intervals) < 2:
+        return 86400.0, 1.0
+    arr = np.array(intervals, dtype=float)
+    arr = arr[arr > 0]
+    if len(arr) < 2:
+        return 86400.0, 1.0
+    mean_val = float(np.mean(arr))
+    std_val = float(np.std(arr))
+    if mean_val <= 0 or std_val <= 0:
+        return max(mean_val, 60.0), 1.0
+    cv = max(0.05, std_val / mean_val)
+    k = max(0.2, min(5.0, cv ** -1.086))
+    try:
+        scale_lambda = max(10.0, mean_val / math.gamma(1.0 + 1.0 / k))
+    except Exception:
+        scale_lambda = max(10.0, mean_val)
+    return float(scale_lambda), float(k)
+
+
+def weibull_conditional_failure_prob(scale_lambda: float, k: float, t_elapsed: float, dt: float = 3600.0) -> float:
+    """Calculates conditional probability of failure in the next dt seconds given survival up to t_elapsed."""
+    if scale_lambda <= 0 or k <= 0:
+        return 0.0
+    t1 = max(0.0, t_elapsed)
+    t2 = t1 + dt
+    try:
+        integral = ((t2 / scale_lambda) ** k) - ((t1 / scale_lambda) ** k)
+        prob = 1.0 - math.exp(-min(integral, 25.0))
+        return float(max(0.0, min(1.0, prob)))
+    except Exception:
+        return 0.05
+
+
 def build_risk_profile(node_id: str,
                        log_entries: List[dict],
                        incident_stats: Optional[dict]) -> dict:
@@ -162,9 +197,14 @@ def build_risk_profile(node_id: str,
     dominant_error = next(iter(stats.get("errors") or {}), None)
 
     mtbf_s = None
+    scale_lambda, weibull_k = 86400.0, 1.0
     if len(outage_times) >= 2:
         gaps   = np.diff(sorted(outage_times))
         mtbf_s = round(float(gaps.mean()), 1)
+        scale_lambda, weibull_k = fit_weibull(list(gaps))
+
+    t_last = sorted(outage_times)[-1] if outage_times else None
+    t_elapsed = max(0.0, time.time() - t_last) if t_last else 86400.0
 
     mttrs = []
     ot = sorted(outage_times)
@@ -207,42 +247,47 @@ def build_risk_profile(node_id: str,
         "dominant_error": dominant_error,
         "hour_heatmap":   hour_heatmap,
         "weekly_rate":    weekly_rate,
+        "weibull_lambda": round(scale_lambda, 1),
+        "weibull_k":      round(weibull_k, 2),
+        "time_since_last_outage_s": round(t_elapsed, 1),
     }
 
 
 def profile_risk_score(profile: dict, current_hour: int) -> Tuple[float, str]:
-    score = 0.0
-    parts = []
+    scale_lambda = profile.get("weibull_lambda", 86400.0)
+    k = profile.get("weibull_k", 1.0)
+    t_elapsed = profile.get("time_since_last_outage_s", 3600.0)
 
-    mtbf = profile.get("mtbf_s")
-    if mtbf is not None:
-        mtbf_score = max(0.0, 1.0 - math.log1p(mtbf / 600) / math.log1p(86400 / 600))
-        score += 0.35 * mtbf_score
-        if mtbf_score > 0.4:
-            parts.append(f"MTBF {round(mtbf / 60)}min")
+    # 1. Weibull conditional failure hazard in next 1 hour
+    weibull_hazard = weibull_conditional_failure_prob(scale_lambda, k, t_elapsed, dt=3600.0)
 
-    trend = profile.get("failure_trend", "UNKNOWN")
-    if trend == "INCREASING":
-        score += 0.25
-        parts.append("outage frequency increasing")
-    elif trend == "STABLE":
-        score += 0.05
-
+    # 2. Hour of day heatmap modifier
     heatmap = profile.get("hour_heatmap") or [0] * 24
-    if len(heatmap) == 24:
-        h_risk = heatmap[current_hour]
-        score += 0.20 * h_risk
-        if h_risk > 0.6:
-            parts.append(f"risky hour {current_hour}:00 UTC")
+    h_risk = heatmap[current_hour] if len(heatmap) == 24 else 0.0
 
+    # 3. Weekly rate scale
     wr       = profile.get("weekly_rate") or 0
     wr_score = min(wr / 20.0, 1.0)
-    score   += 0.20 * wr_score
+
+    # Blended historical risk anchored on rigorous Weibull hazard rate
+    score = min(1.0, 0.50 * weibull_hazard + 0.30 * wr_score + 0.20 * h_risk)
+
+    parts = []
+    if k > 1.25 and weibull_hazard >= 0.25:
+        parts.append(f"Weibull wear-out hazard {round(weibull_hazard * 100)}% (k={k:.1f})")
+    elif k < 0.75 and weibull_hazard >= 0.25:
+        parts.append(f"Weibull flapping hazard {round(weibull_hazard * 100)}% (k={k:.1f})")
+    elif weibull_hazard >= 0.30:
+        parts.append(f"Failure hazard {round(weibull_hazard * 100)}%")
+
+    mtbf = profile.get("mtbf_s")
+    if mtbf:
+        parts.append(f"MTBF {round(mtbf / 60)}min")
     if wr_score > 0.5:
         parts.append(f"{wr:.1f} outages/week")
 
     reason = "; ".join(parts) if parts else "Historical pattern: low risk"
-    return round(min(score, 1.0), 4), reason
+    return round(score, 4), reason
 
 
 def risk_band(score: float) -> str:

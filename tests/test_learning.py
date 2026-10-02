@@ -158,3 +158,49 @@ def test_everything_for_the_learning_page(world):
     assert page["weights"] == [{"node": "ingest1", "factor": 1.333, "right": 1, "wrong": 0}]
     assert [l["correction"] for l in page["lessons"]] == ["it is a test feed"]
     assert len(page["recentFeedback"]) == 3 and page["settings"]["minPattern"] == 2
+
+
+def test_dynamic_alert_policy_and_feedback(world):
+    metrics, learner = world
+    # Simulate recurring transient outages on ingest1 and cascading to xcode4
+    for day in range(12):
+        # outage(node, start, minutes)
+        # 0.4 minutes = 24 seconds duration
+        t_start = at(minutes=day * 10, days=0)
+        t_xcode = (datetime.fromisoformat(t_start) + timedelta(seconds=15)).isoformat()
+        log(metrics, 
+            outage("ingest1", t_start, 0.4),
+            outage("xcode4", t_xcode, 0.3))
+
+    policy = learner.get_dynamic_alert_policy()
+    assert "node_profiles" in policy
+    assert "cascade_graph" in policy
+    assert "ingest1" in policy["node_profiles"]
+
+    profile = policy["node_profiles"]["ingest1"]
+    assert profile["outage_count"] == 12
+    assert profile["median_duration_s"] == 24.0
+    assert profile["is_flapper"] is True
+    # Hold down should be clamped between 25 and 45s (24s + 5 = 29s)
+    assert profile["hold_down_s"] == 29
+
+    # Check cascade graph
+    assert "ingest1" in policy["cascade_graph"]
+    followers = policy["cascade_graph"]["ingest1"]
+    assert any(f["follower"] == "xcode4" for f in followers)
+
+    # Check audio tuning
+    assert "audio_tuning" in profile
+    tuning = profile["audio_tuning"]
+    assert tuning["speech_rate"] == 1.25
+    assert tuning["verbosity"] == "brief"
+    assert tuning["anti_fatigue"] is True
+    assert tuning["speech_pitch"] <= 0.95
+    assert "time_of_day" in policy
+    assert "shift" in policy["time_of_day"]
+
+    # Test outcome recording
+    success = learner.record_alert_outcome("ingest1", "settled_alone")
+    assert success is True
+    success_silence = learner.record_alert_outcome("ingest1", "silenced_fast")
+    assert success_silence is True

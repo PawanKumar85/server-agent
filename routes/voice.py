@@ -2,7 +2,7 @@
 
 import os
 import tempfile
-from typing import Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse, Response
@@ -23,6 +23,8 @@ class AlertRequest(BaseModel):
     minutes: Optional[float] = Field(None, ge=0, le=100000)
     subject: Optional[str] = Field(None, max_length=500)
     style: Optional[str] = Field(None, max_length=20)  # force a mood (the Learning page's preview)
+    text: Optional[str] = Field(None, max_length=2000)
+    audio_tuning: Optional[Dict[str, Any]] = None
 
 
 class VoiceSettings(BaseModel):

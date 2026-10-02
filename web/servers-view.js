@@ -12,8 +12,8 @@
 
 const srvView = {band: "all", q: "", predictions: {}, anomalies: {}, fetchedAt: 0};
 const SRV_BANDS = [
-  {id: "critical", label: "Critical", min: 60}, {id: "high", label: "High", min: 35},
-  {id: "watch", label: "Watch", min: 15}, {id: "healthy", label: "Healthy", min: 0},
+  {id: "critical", label: "Critical", min: 65}, {id: "high", label: "High", min: 45},
+  {id: "watch", label: "Watch", min: 25}, {id: "healthy", label: "Healthy", min: 0},
 ];
 const ROLE_NAMES = {MainInput: "Main", BackupLink: "Backup", Transcoding: "Transcoding", FinalLink: "Final"};
 const srvShort = id => String(id || "").replace(".ottlive.co.in", "").replace(/\.co\.in$/, "");
@@ -33,67 +33,82 @@ function scoreServer(n) {
   const failing = health.filter(h => h.up === false);
   const down = n.status === "DOWN";
   if (down) {
-    score += 40;
+    score += 45;
     const p = failing.length && typeof urlProblem === "function" ? urlProblem(failing[0]) : null;
     reasons.push({tone: "bad", text: p ? `Down now: ${p.title.toLowerCase()}` : "Down now"});
   }
   if (failing.length) {
-    score += 15 * (failing.length / Math.max(health.length, 1));
+    score += 25 * (failing.length / Math.max(health.length, 1));
     if (!down || failing.length > 1) reasons.push({tone: "bad", text: `${failing.length} of ${health.length} stream${health.length === 1 ? "" : "s"} failing`});
   }
   const groups = (typeof nodeAlerts !== "undefined" ? nodeAlerts.groups : []) || [];
   const group = groups.find(g => g.nodes.includes(n.id));
   if (group) {
     const top = group.ranking[0]?.node;
-    if (top === n.id) { score += 15; reasons.push({tone: "bad", text: "Likely root cause of the current outage"}); }
-    else if (top) { score += 5; reasons.push({tone: "warn", text: `Affected by ${srvShort(top)} upstream`}); }
+    if (top === n.id) { score += 20; reasons.push({tone: "bad", text: "Likely root cause of the current outage"}); }
+    else if (top) { score += 8; reasons.push({tone: "warn", text: `Affected by ${srvShort(top)} upstream`}); }
   }
   const pred = srvView.predictions[n.id];
   if (pred) {
-    score += 20 * Math.min(1, pred.blendedScore || 0);
     const pct = Math.round((pred.blendedScore || 0) * 100);
-    if (pct >= 15) {
+    // Only add significant score if failure risk is high (> 35%)
+    if (pct >= 35) {
+      score += 15 * Math.min(1, pred.blendedScore || 0);
       const trend = pred.profile?.failure_trend === "INCREASING" ? ", outages getting more frequent" : "";
       reasons.push({tone: pct >= 50 ? "bad" : "warn", text: `Failure risk ${pct}%${trend}`});
     }
   }
   const rate = n.pingCount ? n.failedCount / n.pingCount : 0;
-  score += 20 * Math.min(1, rate / 0.4);  // 40% failed checks or worse scores the full 20
-  if (rate >= 0.05) reasons.push({tone: rate >= 0.2 ? "bad" : "warn", text: `${Math.round(rate * 100)}% of checks failed (${(n.failedCount || 0).toLocaleString()} of ${n.pingCount.toLocaleString()})`});
+  // If server is up with all streams live, historical failure rate is strictly informational background context
+  const rateWeight = (!down && failing.length === 0) ? 6 : 18;
+  score += rateWeight * Math.min(1, rate / 0.4);
+  if (rate >= 0.20 && (down || failing.length > 0)) {
+    reasons.push({tone: rate >= 0.35 ? "bad" : "warn", text: `${Math.round(rate * 100)}% of checks failed (${(n.failedCount || 0).toLocaleString()} of ${n.pingCount.toLocaleString()})`});
+  }
   const warnings = (srvView.anomalies[n.id]?.warnings || []);
   if (warnings.length && !down) {
-    score += Math.min(10, 5 * warnings.length);
+    score += Math.min(8, 3 * warnings.length);
     const w = typeof agentWarningParts === "function" ? agentWarningParts(warnings[0]).phrase : warnings[0];
-    reasons.push({tone: "warn", text: `Early warning: ${w}`});
+    reasons.push({tone: "warn", text: `Notice: ${w}`});
   }
   const gl = (typeof nodeAlerts !== "undefined" && nodeAlerts.glitch[n.id]) || null;  // Finals only (glitch.py)
   if (gl) {
-    if (gl.band === "HIGH") { score += 15; reasons.push({tone: "bad", text: `Glitches likely in the next 10 min: ${gl.reasons[0] || ""}`}); }
-    else if (gl.band === "MEDIUM") score += 7;
+    if (gl.band === "HIGH") { score += 20; reasons.push({tone: "bad", text: `Glitches likely in the next 10 min: ${gl.reasons[0] || ""}`}); }
+    else if (gl.band === "MEDIUM") score += 6;
     if (gl.lastHour) {
-      score += Math.min(10, 3 * gl.lastHour);
+      score += Math.min(8, 2 * gl.lastHour);
       const kinds = Object.keys(gl.lastHourKinds || {}).slice(0, 2).join(", ");
       if (gl.band !== "HIGH") reasons.push({tone: "warn", text: `${gl.lastHour} glitch${gl.lastHour === 1 ? "" : "es"} in the last hour${kinds ? ` (${kinds})` : ""}`});
     }
   }
   const ad = (typeof nodeAlerts !== "undefined" && nodeAlerts.scte[n.id]) || null;  // ad-break markers (scte.py)
   if (ad && ad.issues.length) {
-    score += ad.open && ad.open.status === "STUCK" ? 20 : 8;
+    score += ad.open && ad.open.status === "STUCK" ? 25 : 8;
     reasons.push({tone: ad.open && ad.open.status === "STUCK" ? "bad" : "warn", text: ad.issues[0]});
   }
-  const next = (typeof nodeAlerts !== "undefined" ? nodeAlerts.upcoming : []).find(p => p.node === n.id);
+  // Ignore self-fulfilling recursive EARLY_WARNING predictions — only display real operational alerts
+  const next = (typeof nodeAlerts !== "undefined" ? nodeAlerts.upcoming : []).find(p => p.node === n.id && p.kind !== "EARLY_WARNING");
   if (next) {  // predicted to alert soon (alertlog.py)
     score += Math.round(15 * next.probability);
     reasons.unshift({tone: next.kind === "OUTAGE" ? "bad" : "warn",
                      text: `Likely next: ${next.words} ${upNextWhen(next)} (${Math.round(next.probability * 100)}%)`});
   }
-  if ((n.blipCount || 0) >= 10) {
-    score += Math.min(10, n.blipCount / 10);
+  if ((n.blipCount || 0) >= 20) {
+    score += Math.min(6, n.blipCount / 15);
     reasons.push({tone: "warn", text: `${n.blipCount} short blips`});
   }
   score = Math.round(Math.min(100, score));
-  const band = SRV_BANDS.find(b => score >= b.min) || SRV_BANDS.at(-1);
-  if (!reasons.length) reasons.push({tone: "ok", text: n.status === "UP" ? "Working normally" : "Not checked yet"});
+
+  let band = SRV_BANDS.find(b => score >= b.min) || SRV_BANDS.at(-1);
+
+  // Guarantee: A live server where all streams are up and no active fault exists cannot be marked Critical or High
+  if (!down && failing.length === 0 && !group && (!next || next.kind !== "OUTAGE")) {
+    if (band.id === "critical" || band.id === "high") {
+      band = SRV_BANDS.find(b => b.id === (score >= 30 ? "watch" : "healthy"));
+    }
+  }
+
+  if (!reasons.length) reasons.push({tone: "ok", text: n.status === "UP" ? "Working normally (all streams live)" : "Not checked yet"});
   return {score, band, reasons, pred, rate, failing: failing.length, streams: health.length};
 }
 

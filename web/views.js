@@ -283,6 +283,12 @@ async function loadTools() {
         customAction = `<a class="btn primary small" href="/api/export.xlsx" download>⬇ Download .xlsx</a>`;
       } else if (t.name === "trigger_channel_crawl") {
         customAction = `<button class="btn primary small btn-crawl-all">▶ Run All Spiders</button>`;
+      } else if (t.name === "recommend_cdn_placement") {
+        customAction = `<a class="btn primary small" href="/api/cdn/recommendations" target="_blank" rel="noopener">🌐 View CDN PoPs API</a>`;
+      } else if (t.name === "get_server_geo_matrix") {
+        customAction = `<a class="btn primary small" href="/api/cdn/geo-matrix" target="_blank" rel="noopener">📏 View Geo Matrix API</a>`;
+      } else if (t.name === "summarize_incident") {
+        customAction = `<a class="btn primary small" href="/api/report.html?download=1" target="_blank" rel="noopener">📄 Postmortem Report</a>`;
       }
 
       return `
@@ -307,6 +313,9 @@ async function loadTools() {
         </div>
       `;
     }).join("");
+
+    const pill = document.querySelector('button[data-subview="tools"] .subnav-pill');
+    if (pill && data.tools) pill.textContent = data.tools.length;
 
     $$(".btn-chat-tool", container).forEach(b => {
       b.onclick = () => {

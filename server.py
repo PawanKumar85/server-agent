@@ -488,6 +488,9 @@ def log_run_alerts(result, warnings: List[dict]) -> None:
     for w in warnings:
         for text in w["warnings"]:
             kind = "SEGMENT_AGE_HIGH" if text.startswith("segment age") else "EARLY_WARNING"
+            # Only record to persistent alert log if it's segment age or severe anomaly (score >= 6.0)
+            if kind == "EARLY_WARNING" and w.get("score", 0) < 6.0:
+                continue
             key = f"{w['node']}|{kind}|{text.split(' ')[0]}"
             current.add(key)
             if key not in _live_warnings:

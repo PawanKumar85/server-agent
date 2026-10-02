@@ -35,7 +35,7 @@ FOLLOW_S = 900  # B "follows" A if it alerts within this long after
 LEARN_DAYS = 7
 MIN_SUPPORT, MIN_SHARE, MIN_LIFT = 3, 0.3, 2.0
 MIN_LAG_S = 30  # B usually within seconds of A: they happen together (one incident noticed in some order), no warning
-TRIGGER_KINDS = {"OUTAGE", "ESCALATED", "SPIDER_STOPPED", "FAILOVER_ACTIVE", "EARLY_WARNING", "SEGMENT_AGE_HIGH",
+TRIGGER_KINDS = {"OUTAGE", "ESCALATED", "SPIDER_STOPPED", "FAILOVER_ACTIVE", "SEGMENT_AGE_HIGH",
                  "GLITCH", "AD_STUCK", "NETWORK_SLOW", "SPIDER_ERROR"}
 CALM_KINDS = {"RECOVERY", "SPIDER_RECOVERED"}  # endings: never predicted from, never "followed"
 SEVERITY = {"OUTAGE": "error", "ESCALATED": "error", "SPIDER_STOPPED": "error", "SPIDER_ERROR": "error",
@@ -139,7 +139,7 @@ class AlertLog:
         counts: Dict[tuple, int] = defaultdict(int)
         follows: Dict[tuple, List[float]] = defaultdict(list)
         for i, a in enumerate(rows):
-            if a["kind"] in CALM_KINDS:
+            if a["kind"] in CALM_KINDS or a["kind"] == "EARLY_WARNING":
                 continue
             a_key = (a["node"], a["kind"])
             counts[a_key] += 1
@@ -148,7 +148,7 @@ class AlertLog:
                 if b["ts"] - a["ts"] > FOLLOW_S:
                     break
                 b_key = (b["node"], b["kind"])
-                if b_key == a_key or b["kind"] in CALM_KINDS or b_key in seen:
+                if b_key == a_key or b["kind"] in CALM_KINDS or b["kind"] == "EARLY_WARNING" or b_key in seen:
                     continue
                 seen.add(b_key)
                 follows[(a_key, b_key)].append(b["ts"] - a["ts"])
@@ -157,18 +157,27 @@ class AlertLog:
             totals[(r["node"], r["kind"])] += 1
         rules = []
         for (a_key, b_key), lags in follows.items():
-            n, share = len(lags), len(lags) / counts[a_key]
-            base = 1 - math.exp(-totals[b_key] / span * FOLLOW_S)  # chance B happens in any window anyway
-            lift = share / max(base, 1e-3)
-            if n >= MIN_SUPPORT and share >= MIN_SHARE and lift >= MIN_LIFT and statistics.median(lags) >= MIN_LAG_S:
+            n, alpha = len(lags), len(lags) / counts[a_key]  # Hawkes branching ratio alpha_ij
+            med_lag = float(statistics.median(lags))
+            tau = max(med_lag, float(MIN_LAG_S))
+            beta = 1.0 / tau  # Hawkes exponential decay rate beta_ij
+
+            base_rate = totals[b_key] / span
+            base = 1.0 - math.exp(-base_rate * FOLLOW_S)  # chance B happens anyway in any window
+            lift = alpha / max(base, 1e-3)
+
+            # Hawkes aftershock probability integrated over characteristic window
+            hawkes_prob = 1.0 - math.exp(-alpha * (1.0 - math.exp(-beta * FOLLOW_S)))
+
+            if n >= MIN_SUPPORT and alpha >= MIN_SHARE and lift >= MIN_LIFT and med_lag >= MIN_LAG_S:
                 rules.append({"if_node": a_key[0], "if_kind": a_key[1], "then_node": b_key[0], "then_kind": b_key[1],
-                              "share": round(share, 2), "support": n, "of": counts[a_key], "lift": round(lift, 1),
-                              "lag_s": round(statistics.median(lags))})
+                              "share": round(alpha, 2), "hawkes_prob": round(hawkes_prob, 2), "support": n, "of": counts[a_key],
+                              "lift": round(lift, 1), "lag_s": round(med_lag)})
         rules.sort(key=lambda r: (-r["share"], -r["support"]))
         self._learned = (now, rules)
         return rules
 
-    # --- predicting ---
+    # --- predicting via Hawkes aftershocks and topology ---
 
     def predict(self, topology: Optional[Callable[[], dict]] = None, now: Optional[float] = None,
                 record: bool = True) -> List[dict]:
@@ -203,9 +212,10 @@ class AlertLog:
         for t in triggers:
             for r in rules:
                 if r["if_node"] == t["node"] and r["if_kind"] == t["kind"]:
-                    offer(t, r["then_node"], r["then_kind"], r["share"], r["lag_s"], "learned",
-                          f"after {short(t['node'])} {WORDS.get(t['kind'], t['kind'])}, this followed {r['support']} of "
-                          f"{r['of']} times, usually ~{fmt_s(r['lag_s'])} later")
+                    prob = r["share"]  # what actually followed; the Hawkes decay value is kept for display only
+                    offer(t, r["then_node"], r["then_kind"], prob, r["lag_s"], "learned",
+                          f"Hawkes aftershock: after {short(t['node'])} {WORDS.get(t['kind'], t['kind'])}, "
+                          f"this followed {r['support']} of {r['of']} times (~{fmt_s(r['lag_s'])} lag)")
             if topo and t["kind"] in ("OUTAGE", "ESCALATED", "SPIDER_STOPPED"):
                 for p in pipeline_followers(topo, t["node"]):
                     offer(t, p["node"], p["kind"], p["probability"], PIPELINE_LAG_S, "pipeline", p["reason"])

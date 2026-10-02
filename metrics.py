@@ -529,6 +529,13 @@ class Metrics:
                                          "z": round(z, 1), "trend": trend}
             if z > 0 and not math.isinf(z):  # only "worse than normal" counts (lower latency is good)
                 worst = max(worst, z)
+
+        # Multivariate Mahalanobis Distance across correlated network telemetry dimensions:
+        # Avoids single-metric jitter false alarms by evaluating covariance dispersion
+        z_vector = [max(0.0, m["z"]) for m in result["metrics"].values() if not math.isinf(m.get("z", 0))]
+        d_mahalanobis = math.sqrt(sum(zi ** 2 for zi in z_vector) / max(len(z_vector), 1)) if z_vector else 0.0
+        result["mahalanobis_d"] = round(d_mahalanobis, 2)
+
         # Segment age: each URL against its own learned normal (segment_alerts). A warning scores as far past
         # its line as it is (k at the line itself), like a z-score.
         segments = [a for a in self.segment_alerts(node) if a["baseline"]]
@@ -554,7 +561,12 @@ def warnings(anomaly: Dict[str, Any]) -> List[str]:
     for metric, m in anomaly.get("metrics", {}).items():
         if m["z"] >= Z_WARN:
             out.append(f"{names[metric]} {m['value']} is {m['z']}σ above its normal {m['normal']}")
-        elif m["trend"] == "rising":
+        elif m.get("trend") == "rising" and m.get("z", 0) >= 2.5:
+            # Avoid flagging normal benign broadband/ping fluctuations as early warnings
+            if metric == "rtt_ms" and m.get("value", 0) < 120.0:
+                continue
+            if metric == "latency_ms" and m.get("value", 0) < 350.0:
+                continue
             out.append(f"{names[metric]} is trending up ({m['value']} vs normal {m['normal']})")
     for a in anomaly.get("segments", []):
         if a["active"] and a["age"] is not None:

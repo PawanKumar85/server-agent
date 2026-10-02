@@ -118,3 +118,78 @@ class StreamFreshnessSummaryTool(BaseChatTool):
             "type": "token",
             "text": f"⏱ **Live Stream Freshness Breakdown**\n\n{summary}\n\n*Cached via In-Memory Telemetry Pool (< 0.1ms)*\n"
         }
+
+
+@ChatToolRegistry.register
+class SummarizeIncidentTool(BaseChatTool):
+    """Produces an AI-synthesized executive postmortem summary from incident and error logs."""
+
+    name = "summarize_incident"
+    description = (
+        "Summarizes recent outages, manifest 404s, stale segment warnings, and incident logs into "
+        "a crisp executive postmortem report with root cause takeaways using NLP TextRank graph scoring."
+    )
+    category = "AI Postmortem"
+    icon = "🧠"
+    prompt_example = "Generate an executive incident postmortem summary of recent outage logs"
+    parameters = {
+        "type": "object",
+        "properties": {
+            "channel": {
+                "type": "string",
+                "description": "Optional channel or server name to filter incident summary",
+            },
+            "max_sentences": {
+                "type": "integer",
+                "description": "Number of key findings to extract (default 3)",
+            },
+        },
+        "additionalProperties": False,
+    }
+
+    def execute(self, executor: Any, args: dict) -> Iterator[dict]:
+        from incident_summarizer import textrank_summarizer
+        from telemetry_pool import telemetry_pool
+
+        channel = args.get("channel", "")
+        max_sentences = int(args.get("max_sentences", 3))
+
+        # The real alert history (24 h, newest first): outages, recoveries, warnings, glitches, ad-break problems.
+        logs = []
+        try:
+            from alertlog import AlertLog
+            from metrics import store as metrics_store
+            want = channel.lower().strip()
+            for a in AlertLog(metrics_store().path).recent(since_s=86400, limit=200):
+                if want and want not in f"{a.get('node')} {a.get('channel') or ''}".lower():
+                    continue
+                logs.append(f"{a.get('node')}{' (' + a['channel'] + ')' if a.get('channel') else ''}: "
+                            f"{str(a.get('kind', '')).lower().replace('_', ' ')}"
+                            + (f", {a['detail']}" if a.get("detail") else "") + ".")
+        except Exception:
+            pass
+        if not logs:  # nothing logged: what is down right now
+            for n in (telemetry_pool.get_nodes(executor.driver) or {}).values():
+                if n.get("status") == "DOWN":
+                    logs.append(f"Server {n.get('id') or n.get('domain')} is down: {n.get('lastError') or 'no detail'}.")
+
+        res = textrank_summarizer.summarize_incident(logs, max_sentences=max_sentences, channel=channel)
+
+        md = f"### 🧠 NLP Executive Incident Postmortem\n\n"
+        md += f"**{res['headline']}**\n\n"
+        md += f"> {res['executive_summary']}\n\n"
+        if res.get("key_findings"):
+            md += "#### 🔍 Key Takeaways & Root Cause Signals:\n"
+            for f in res["key_findings"]:
+                md += f"- {f}\n"
+        md += f"\n*Analyzed {res['raw_sentence_count']} incident log entries using Graph Centrality TextRank.*"
+
+        yield {"type": "token", "text": md}
+
+
+# Auto-register modular tools
+try:
+    import geo_cdn_tool  # Registers recommend_cdn_placement and get_server_geo_matrix
+except Exception:
+    pass
+

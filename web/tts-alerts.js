@@ -50,6 +50,15 @@ const ttsAlerts = {
   } catch (e) {
     ttsAlerts.enabled = true;
   }
+  // Immediately load dynamic learned hold-down and cascading policies
+  if (typeof ttsAlerts.fetchDynamicPolicy === "function") {
+    ttsAlerts.fetchDynamicPolicy();
+  }
+  setInterval(() => {
+    if (typeof ttsAlerts.fetchDynamicPolicy === "function") {
+      ttsAlerts.fetchDynamicPolicy();
+    }
+  }, 60000);
 })();
 
 // --- Voice Discovery & Hindi Voice Selection ---
@@ -188,7 +197,7 @@ function getNodeServer(nodeId, url) {
 }
 
 // --- Indian Melodic Broadcast Chime via Web Audio API ---
-function playIndianBroadcastChime(severity) {
+function playIndianBroadcastChime(severity, serverName = null) {
   try {
     const AudioCtx = window.AudioContext || window.webkitAudioContext;
     if (!AudioCtx) return;
@@ -197,16 +206,20 @@ function playIndianBroadcastChime(severity) {
     if (ctx.state === "suspended") ctx.resume();
 
     const now = ctx.currentTime;
+    const profile = serverName ? ttsAlerts.getNodeProfile(serverName) : null;
+    const tuning = profile?.audio_tuning;
+    const tod = ttsAlerts.dynamicPolicy?.time_of_day || {};
 
-    // Chime notes:
-    // CRITICAL: Descending urgent chime (C#5 -> A4 -> F#4)
-    // AGGRESSIVE: Sharp piercing aggressive staccato chord (E5 -> E5 -> A5)
-    // WARNING: Ascending pleasant alert chime (F#4 -> A4 -> C#5)
+    // Dynamic Chime Notes learned from incident MTTR & failure profile:
     let notes = [369.99, 440.00, 554.37];
     let noteVol = 0.16;
     let step = 0.11;
 
-    if (severity === "CRITICAL") {
+    if (tuning?.siren_notes && Array.isArray(tuning.siren_notes) && tuning.siren_notes.length > 0) {
+      notes = tuning.siren_notes;
+      noteVol = tuning.chime_vol || 0.18;
+      step = (tuning.speech_rate && tuning.speech_rate > 1.15) ? 0.08 : 0.11;
+    } else if (severity === "CRITICAL") {
       notes = [554.37, 440.00, 369.99];
       noteVol = 0.22;
       step = 0.11;
@@ -214,6 +227,11 @@ function playIndianBroadcastChime(severity) {
       notes = [659.25, 659.25, 880.00];
       noteVol = 0.26;
       step = 0.08;
+    }
+
+    // Apply Time-of-Day Attention Boost (e.g. night shift 02:00-06:00 IST)
+    if (tod.attention_chime_boost) {
+      noteVol = Math.min(0.35, noteVol + tod.attention_chime_boost);
     }
 
     notes.forEach((freq, idx) => {
@@ -359,6 +377,11 @@ function showTtsBanner(text, severity) {
   const stopBtn = banner.querySelector(".tts-live-stop");
   if (stopBtn) {
     stopBtn.onclick = () => {
+      const activeDur = Date.now() - (ttsAlerts.speechStartTime || 0);
+      const targetSrv = ttsAlerts.activeServerSpeaking;
+      if (activeDur < 4000 && targetSrv) {
+        ttsAlerts.recordOutcome(targetSrv, "silenced_fast");
+      }
       ttsAlerts.cancel();
     };
   }
@@ -383,12 +406,12 @@ function normalizeTextForSpeech(text) {
     .trim();
 }
 
-function speakHinglish(text, severity, skipChime = false) {
+function speakHinglish(text, severity, skipChime = false, serverName = null) {
   if (!window.speechSynthesis || !ttsAlerts.enabled || !text) return;
 
   try {
-    // 1. Play Indian broadcast chime tone
-    if (!skipChime) playIndianBroadcastChime(severity);
+    // 1. Play Indian broadcast chime tone with dynamic learned notes
+    if (!skipChime) playIndianBroadcastChime(severity, serverName);
 
     // 2. Cancel any previous speech
     window.speechSynthesis.cancel();
@@ -406,11 +429,13 @@ function speakHinglish(text, severity, skipChime = false) {
       }
     }
 
-    // Audio Tone Profiles:
-    // 1. CRITICAL: Order tone (Commanding, urgent)
-    // 2. AGGRESSIVE: Angry tone (Fast, high-pitch, loud for repeated server warnings)
-    // 3. WARNING: Request tone (Polite, calm, respectful)
+    // Audio Tone Profiles & Dynamic Data-Driven Tuning:
     ttsAlerts.speechStartTime = Date.now();
+    ttsAlerts.activeServerSpeaking = serverName || null;
+
+    const profile = serverName ? ttsAlerts.getNodeProfile(serverName) : null;
+    const tuning = profile?.audio_tuning;
+    const tod = ttsAlerts.dynamicPolicy?.time_of_day || {};
 
     if (severity === "CRITICAL") {
       utter.rate = 0.96;
@@ -430,7 +455,22 @@ function speakHinglish(text, severity, skipChime = false) {
       utter.volume = 0.85;
     }
 
-    showTtsBanner(text, severity);
+    // Apply learned MTTR & flapper speech modulation
+    if (tuning) {
+      if (tuning.speech_rate) utter.rate = tuning.speech_rate;
+      if (tuning.speech_pitch) utter.pitch = tuning.speech_pitch;
+      if (tuning.anti_fatigue) utter.volume = Math.min(utter.volume, 0.88);
+    }
+
+    // Apply Time of Day Volume & Pitch Mods (Office day chatter vs night shift silence)
+    if (tod.volume_boost) {
+      utter.volume = Math.min(1.0, utter.volume + tod.volume_boost);
+    }
+    if (tod.pitch_mod) {
+      utter.pitch = Math.min(1.4, utter.pitch + tod.pitch_mod);
+    }
+
+    showTtsBanner(text, severity, serverName);
     ttsAlerts.speaking = true;
     ttsAlerts.activeUtterance = utter;
 
@@ -464,7 +504,22 @@ const MOOD_WORDS = {calm: "Calm", urgent: "Urgent", angry: "Angry", furious: "Fu
 async function speakAlert(fallbackText, severity, ctx = {}) {
   if (!ttsAlerts.enabled || !fallbackText) return;
   unlockAudioOnInteraction();
-  playIndianBroadcastChime(severity);
+
+  const serverName = ctx.server || null;
+  const profile = serverName ? ttsAlerts.getNodeProfile(serverName) : null;
+  const tuning = profile?.audio_tuning;
+
+  // Dynamic pacing & verbosity from learned MTTR data
+  let effectiveText = fallbackText;
+  if (tuning?.verbosity === "brief" && severity === "WARNING") {  // never for a real outage
+    const srvShort = (serverName || "Server").split(".")[0];
+    const chs = (ctx.channels || []).filter(Boolean).slice(0, 3).join(", ");
+    effectiveText = `Anushrav Sir, ${srvShort}${chs ? ` (${chs})` : ""} par transient stall notice hua hai. Check kariye.`;
+  } else if (tuning?.learned_fix && ctx.durationActiveMs && ctx.durationActiveMs > ((profile?.hold_down_s || 5) * 1000)) {
+    effectiveText += ` Pichli baar iska fix tha: ${tuning.learned_fix}.`;
+  }
+
+  playIndianBroadcastChime(severity, serverName);
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), 12000);
   ttsAlerts.humanAbort = ctl;
@@ -472,20 +527,21 @@ async function speakAlert(fallbackText, severity, ctx = {}) {
     const res = await fetch("/api/voice/alert", {
       method: "POST", headers: {"Content-Type": "application/json"}, signal: ctl.signal,
       body: JSON.stringify({
-        severity, channels: (ctx.channels || []).filter(Boolean).slice(0, 20), server: ctx.server || null,
+        severity, channels: (ctx.channels || []).filter(Boolean).slice(0, 20), server: serverName,
         title: ctx.title ? String(ctx.title).slice(0, 500) : null, detail: ctx.detail ? String(ctx.detail).slice(0, 1000) : null,
-        minutes: ctx.minutes || null, subject: ctx.subject || null, style: ctx.style || null, text: ctx.text || null,
+        minutes: ctx.minutes || null, subject: ctx.subject || null, style: ctx.style || null, text: effectiveText,
+        audio_tuning: tuning || null,
       }),
     });
     clearTimeout(timer);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const clip = await res.json();
     if (!ttsAlerts.enabled) return;
-    if (!clip.audio_url) { speakHinglish(clip.text || fallbackText, severity, true); return; }
+    if (!clip.audio_url) { speakHinglish(clip.text || effectiveText, severity, true, serverName); return; }
     playHumanClip(clip, severity, ctx.nodeIds || []);
   } catch (err) {
     clearTimeout(timer);
-    if (!ctl.cancelled && ttsAlerts.enabled) speakHinglish(fallbackText, severity, true);  // timeout or server error
+    if (!ctl.cancelled && ttsAlerts.enabled) speakHinglish(effectiveText, severity, true, serverName);  // timeout or server error
   }
 }
 
@@ -552,6 +608,66 @@ function showHumanBanner(clip, severity) {
   banner.hidden = false;
 }
 
+// --- Dynamic Learned Policy & Auto-Tuning Engine ---
+ttsAlerts.dynamicPolicy = {
+  nodeProfiles: {},
+  cascadeGraph: {},
+  lastFetchedAt: 0
+};
+
+ttsAlerts.fetchDynamicPolicy = async function () {
+  try {
+    const res = await fetch("/api/learning/dynamic-alert-policy");
+    if (res.ok) {
+      const data = await res.json();
+      ttsAlerts.dynamicPolicy.nodeProfiles = data.node_profiles || {};
+      ttsAlerts.dynamicPolicy.cascadeGraph = data.cascade_graph || {};
+      ttsAlerts.dynamicPolicy.time_of_day = data.time_of_day || {};
+      ttsAlerts.dynamicPolicy.lastFetchedAt = Date.now();
+      console.debug("[TTS] Dynamic alert policy updated:", Object.keys(ttsAlerts.dynamicPolicy.nodeProfiles).length, "nodes");
+    }
+  } catch (err) {
+    console.debug("[TTS] Failed to fetch dynamic alert policy:", err);
+  }
+};
+
+ttsAlerts.getNodeProfile = function (serverName, nodeId) {
+  const profiles = ttsAlerts.dynamicPolicy.nodeProfiles || {};
+  const srvKey = (serverName || "").toLowerCase().replace(/https?:\/\/|\/.*$/g, "").split(".")[0];
+  const nodeKey = (nodeId || "").toLowerCase();
+  return profiles[srvKey] || profiles[nodeKey] || profiles[serverName] || null;
+};
+
+ttsAlerts.isCascadeSuppressed = function (serverName, activeDownServers) {
+  if (!activeDownServers || activeDownServers.size === 0) return false;
+  const graph = ttsAlerts.dynamicPolicy.cascadeGraph || {};
+  const srvClean = (serverName || "").toLowerCase().replace(/https?:\/\/|\/.*$/g, "").split(".")[0];
+
+  for (const parentSrv of activeDownServers) {
+    const pClean = (parentSrv || "").toLowerCase().replace(/https?:\/\/|\/.*$/g, "").split(".")[0];
+    if (pClean === srvClean) continue;
+    const followers = graph[pClean] || [];
+    for (const f of followers) {
+      const fClean = (f.follower || "").toLowerCase();
+      const fullClean = (f.full_follower || "").toLowerCase();
+      if (fClean === srvClean || fullClean.includes(srvClean)) {
+        return { parent: parentSrv, lag: f.lag_s || 60 };
+      }
+    }
+  }
+  return false;
+};
+
+ttsAlerts.recordOutcome = function (node, outcome) {
+  try {
+    fetch("/api/learning/record-alert-outcome", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ node: node || "unknown", outcome })
+    }).catch(() => {});
+  } catch (_) {}
+};
+
 // Server Warning Tracking Map: serverName -> { count, firstWarnAt, lastSpokenAt, escalated, channels }
 ttsAlerts.serverWarningState = {};
 
@@ -617,6 +733,10 @@ ttsAlerts.evaluateAllFinalNodes = function () {
   if (typeof G === "undefined" || !Array.isArray(G.nodes)) return;
 
   const now = Date.now();
+  if (now - (ttsAlerts.dynamicPolicy?.lastFetchedAt || 0) > 60000) {
+    ttsAlerts.fetchDynamicPolicy();
+  }
+
   const finalNodes = G.nodes.filter(n =>
     (n.labels || []).includes("FinalLink") || (n.roles || []).includes("FinalLink")
   );
@@ -625,6 +745,20 @@ ttsAlerts.evaluateAllFinalNodes = function () {
   const pendingWarnings = [];
   const recoveredList = [];
   const activeWarningsByServer = {};
+
+  // First pass: identify all servers currently experiencing confirmed critical failure
+  const confirmedDownServers = new Set();
+  for (const n of finalNodes) {
+    const finalLinks = (n.links || []).filter(l => l.role === "FinalLink");
+    const targets = finalLinks.length > 0 ? finalLinks.map(l => l.url) : [null];
+    for (const url of targets) {
+      const alertObj = (typeof cardAlert === "function") ? cardAlert(n.id, url) : null;
+      if (alertObj && alertObj.tone === "down") {
+        const srv = getNodeServer(n.id, url);
+        if (srv) confirmedDownServers.add(srv);
+      }
+    }
+  }
 
   for (const n of finalNodes) {
     const finalLinks = (n.links || []).filter(l => l.role === "FinalLink");
@@ -641,7 +775,9 @@ ttsAlerts.evaluateAllFinalNodes = function () {
         title: "",
         text: "",
         acknowledged: false,
-        warnCount: 0
+        warnCount: 0,
+        episodeStartAt: 0,
+        hasVoiced: false
       };
 
       // Determine current severity
@@ -654,10 +790,29 @@ ttsAlerts.evaluateAllFinalNodes = function () {
         }
       }
 
+      // Track ongoing episode start time
+      if (currentSeverity !== "NONE") {
+        if (!last.episodeStartAt) {
+          last.episodeStartAt = now;
+          last.hasVoiced = false;
+        }
+        ttsAlerts.state[key] = last;  // keep the episode start between checks, or the hold-down never ends
+      }
+
       // Check recovery
-      if (currentSeverity === "NONE" && (last.severity === "CRITICAL" || last.severity === "WARNING" || last.severity === "AGGRESSIVE")) {
-        recoveredList.push({ nodeId: n.id, channel, key, serverName });
-        ttsAlerts.state[key] = { severity: "NONE", spokenAt: 0, title: "", text: "", acknowledged: false, warnCount: 0 };
+      // An episode ends: it was spoken (real outage) or it cleared during the hold-down (settled alone).
+      if (currentSeverity === "NONE" && (last.episodeStartAt || last.severity === "CRITICAL" || last.severity === "WARNING" || last.severity === "AGGRESSIVE")) {
+        const episodeDurationMs = now - (last.episodeStartAt || now);
+        if (!last.hasVoiced) {
+          // Self-healed inside dynamic hold-down grace window! Suppressed false alert.
+          ttsAlerts.recordOutcome(serverName || channel, "settled_alone");
+          console.info(`[TTS Auto-Tune] Stream ${channel} self-healed in ${Math.round(episodeDurationMs/1000)}s! Suppressed false alert.`);
+        } else {
+          // Real confirmed outage that was voiced
+          ttsAlerts.recordOutcome(serverName || channel, "real_outage");
+          recoveredList.push({ nodeId: n.id, channel, key, serverName });
+        }
+        ttsAlerts.state[key] = { severity: "NONE", spokenAt: 0, title: "", text: "", acknowledged: false, warnCount: 0, episodeStartAt: 0, hasVoiced: false };
         continue;
       }
 
@@ -668,14 +823,47 @@ ttsAlerts.evaluateAllFinalNodes = function () {
       if (last.acknowledged && (currentSeverity === last.severity || last.severity === "AGGRESSIVE")) continue;
 
       if (currentSeverity === "CRITICAL") {
-        // CRITICAL: Speak immediately on new critical alert or escalation from warning.
+        const durationActiveMs = now - (last.episodeStartAt || now);
+        const profile = ttsAlerts.getNodeProfile(serverName, n.id);
+        const holdDownMs = (profile?.hold_down_s || 5) * 1000;
+
+        // Dynamic Hold-Down Check (Silences transient micro-flappers)
+        if (durationActiveMs < holdDownMs && !last.hasVoiced) {
+          console.debug(`[TTS Hold-Down] Holding alert for ${channel} (${Math.round(durationActiveMs/1000)}s / ${profile?.hold_down_s || 5}s)`);
+          continue;
+        }
+
+        // Dynamic Cascading Suppression Check
+        const cascadeParent = ttsAlerts.isCascadeSuppressed(serverName, confirmedDownServers);
+        if (cascadeParent) {
+          console.info(`[TTS Cascade-Guard] Suppressing downstream alert for ${serverName} (Caused by parent ${cascadeParent.parent})`);
+          continue;
+        }
+
+        // CRITICAL: Speak on new critical alert or when cooldown expired
         const isNew = last.severity !== "CRITICAL";
         const cooldownExpired = (now - last.spokenAt) >= ttsAlerts.criticalCooldownMs;
 
         if (isNew || cooldownExpired) {
+          last.hasVoiced = true;
           pendingCriticals.push({ nodeId: n.id, channel, key, alertObj, serverName });
         }
       } else if (currentSeverity === "WARNING") {
+        const durationActiveMs = now - (last.episodeStartAt || now);
+        const profile = ttsAlerts.getNodeProfile(serverName, n.id);
+        const holdDownMs = (profile?.hold_down_s || 10) * 1000;
+
+        // Don't queue warnings if still within transient hold-down
+        if (durationActiveMs < holdDownMs && !last.hasVoiced) {
+          continue;
+        }
+
+        // Cascade suppression for warnings
+        const cascadeParent = ttsAlerts.isCascadeSuppressed(serverName, confirmedDownServers);
+        if (cascadeParent) {
+          continue;
+        }
+
         // Group active warnings by server to detect repeated warnings across channels
         if (!activeWarningsByServer[serverName]) {
           activeWarningsByServer[serverName] = [];
@@ -765,13 +953,16 @@ ttsAlerts.evaluateAllFinalNodes = function () {
   // 1. Critical Outage (Order Tone - Immediate Viewer Outage)
   if (pendingCriticals.length > 0) {
     pendingCriticals.forEach(c => {
+      const prev = ttsAlerts.state[c.key] || {};
       ttsAlerts.state[c.key] = {
         severity: "CRITICAL",
         spokenAt: now,
         title: c.alertObj?.title || "",
         text: c.alertObj?.text || "",
         acknowledged: false,
-        warnCount: 0
+        warnCount: 0,
+        episodeStartAt: prev.episodeStartAt || now,
+        hasVoiced: true
       };
     });
 
@@ -787,13 +978,16 @@ ttsAlerts.evaluateAllFinalNodes = function () {
   if (serverAggressiveAlerts.length > 0) {
     const agg = serverAggressiveAlerts[0];
     agg.items.forEach(w => {
+      const prev = ttsAlerts.state[w.key] || {};
       ttsAlerts.state[w.key] = {
         severity: "AGGRESSIVE",
         spokenAt: now,
         title: w.alertObj?.title || "",
         text: w.alertObj?.text || "",
         acknowledged: false,
-        warnCount: (ttsAlerts.state[w.key]?.warnCount || 0) + 1
+        warnCount: (prev.warnCount || 0) + 1,
+        episodeStartAt: prev.episodeStartAt || now,
+        hasVoiced: true
       };
     });
 
@@ -808,13 +1002,16 @@ ttsAlerts.evaluateAllFinalNodes = function () {
   // 3. New Initial Warning (Polite Request Tone)
   if (pendingWarnings.length > 0) {
     pendingWarnings.forEach(w => {
+      const prev = ttsAlerts.state[w.key] || {};
       ttsAlerts.state[w.key] = {
         severity: "WARNING",
         spokenAt: now,
         title: w.alertObj?.title || "",
         text: w.alertObj?.text || "",
         acknowledged: false,
-        warnCount: 1
+        warnCount: (prev.warnCount || 0) + 1,
+        episodeStartAt: prev.episodeStartAt || now,
+        hasVoiced: true
       };
     });
 

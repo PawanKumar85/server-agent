@@ -396,7 +396,7 @@
             <button type="button" class="agent-subnav-tab active" data-subview="tools">
               <span class="ico">🛠</span>
               <span>Tools</span>
-              <span class="subnav-pill">15</span>
+              <span class="subnav-pill">18</span>
             </button>
             <button type="button" class="agent-subnav-tab" data-subview="skills">
               <span class="ico">🧠</span>
@@ -690,6 +690,89 @@
             </div>
             <div class="tool-actions">
               <button class="btn danger small btn-chat-tool" data-prompt="Delete node jio.ottlive.co.in from the topology with blast radius preview">🗑️ Delete with Preview</button>
+            </div>
+          </div>
+
+          <!-- 15. Autonomous CDN Edge Placement -->
+          <div class="tool-card">
+            <div>
+              <div class="tool-header">
+                <div class="tool-title-wrap">
+                  <span class="tool-icon">🌐</span>
+                  <div>
+                    <h3 class="tool-title">CDN Edge Placement Optimizer</h3>
+                    <div style="font-size:11px;color:var(--muted)"><code>recommend_cdn_placement</code></div>
+                  </div>
+                </div>
+                <span class="tool-tag">Capacity Planning</span>
+              </div>
+              <p class="tool-desc">Analyzes server coordinates, physical Haversine distances, and live video stream latency bottlenecks to recommend the optimal future geographical locations and datacenters for new CDN Edge PoPs.</p>
+            </div>
+            <div class="tool-actions">
+              <a class="btn primary small" href="/api/cdn/recommendations" target="_blank" rel="noopener">🌐 View CDN PoPs API</a>
+              <button class="btn primary small btn-chat-tool" data-prompt="Where should we deploy our next CDN edge server to reduce video latency?">🌐 Ask Agent</button>
+            </div>
+          </div>
+
+          <!-- 16. Server Geolocation & Physical Distance Matrix -->
+          <div class="tool-card">
+            <div>
+              <div class="tool-header">
+                <div class="tool-title-wrap">
+                  <span class="tool-icon">📏</span>
+                  <div>
+                    <h3 class="tool-title">Server Geolocation &amp; Distance Matrix</h3>
+                    <div style="font-size:11px;color:var(--muted)"><code>get_server_geo_matrix</code></div>
+                  </div>
+                </div>
+                <span class="tool-tag">Network Topology</span>
+              </div>
+              <p class="tool-desc">Computes real-world server GPS coordinates (Lat/Lon, City, Country, ISP) and full pairwise Haversine physical distance matrix with speed-of-light optical fiber stretch efficiency scoring.</p>
+            </div>
+            <div class="tool-actions">
+              <a class="btn primary small" href="/api/cdn/geo-matrix" target="_blank" rel="noopener">📏 View Geo Matrix API</a>
+              <button class="btn primary small btn-chat-tool" data-prompt="Show me the physical distance and network stretch between our streaming servers">📏 Ask Agent</button>
+            </div>
+          </div>
+
+          <!-- 17. NLP Incident Postmortem Summarizer -->
+          <div class="tool-card">
+            <div>
+              <div class="tool-header">
+                <div class="tool-title-wrap">
+                  <span class="tool-icon">🧠</span>
+                  <div>
+                    <h3 class="tool-title">NLP Incident Postmortem Summarizer</h3>
+                    <div style="font-size:11px;color:var(--muted)"><code>summarize_incident</code></div>
+                  </div>
+                </div>
+                <span class="tool-tag">AI Postmortem</span>
+              </div>
+              <p class="tool-desc">Synthesizes raw outage alerts, manifest 404s, and stale segment incidents into structured executive postmortem summaries and root cause takeaways using NLP TextRank graph centrality scoring.</p>
+            </div>
+            <div class="tool-actions">
+              <a class="btn primary small" href="/api/report.html?download=1" target="_blank" rel="noopener">📄 Full Postmortem Report</a>
+              <button class="btn primary small btn-chat-tool" data-prompt="Generate an executive incident postmortem summary of recent outage logs">🧠 Ask Agent</button>
+            </div>
+          </div>
+
+          <!-- 18. Live Stream Freshness Breakdown -->
+          <div class="tool-card">
+            <div>
+              <div class="tool-header">
+                <div class="tool-title-wrap">
+                  <span class="tool-icon">⏱</span>
+                  <div>
+                    <h3 class="tool-title">Stream Freshness Summary</h3>
+                    <div style="font-size:11px;color:var(--muted)"><code>get_stream_freshness_summary</code></div>
+                  </div>
+                </div>
+                <span class="tool-tag">Diagnostics</span>
+              </div>
+              <p class="tool-desc">Inspects instantaneous stream freshness tiers (FRESH, WARM, STALE) across all channels and origin nodes cached via In-Memory Telemetry Data Pool in sub-millisecond time.</p>
+            </div>
+            <div class="tool-actions">
+              <button class="btn primary small btn-chat-tool" data-prompt="Show me the stream freshness breakdown across all channels">⏱ Ask Agent</button>
             </div>
           </div>
         </div>

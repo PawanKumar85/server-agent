@@ -86,4 +86,22 @@ def segment_too_sensitive(body: SensitivityRequest):
     return alert
 
 
+class AlertOutcomeRequest(BaseModel):
+    node: str = Field(min_length=1, max_length=255)
+    outcome: Literal["settled_alone", "real_outage", "silenced_fast"]
+
+
+@router.get("/api/learning/dynamic-alert-policy")
+def get_dynamic_alert_policy():
+    """Returns dynamically learned hold-down debounce periods and cascading suppression rules."""
+    return srv.learner.get_dynamic_alert_policy()
+
+
+@router.post("/api/learning/record-alert-outcome")
+def record_alert_outcome(body: AlertOutcomeRequest):
+    """Records whether a hold-down warning settled alone or turned into a real outage."""
+    ok = srv.learner.record_alert_outcome(body.node, body.outcome)
+    return {"success": ok, "node": body.node, "outcome": body.outcome}
+
+
 

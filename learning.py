@@ -24,7 +24,7 @@ import time
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Callable, Dict, Iterable, List, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional
 
 import numpy as np
 
@@ -539,6 +539,172 @@ class Learner:
     def case_count(self) -> int:
         with self._connect() as db:
             return db.execute("SELECT COUNT(*) FROM cases").fetchone()[0]
+
+    def get_dynamic_alert_policy(self) -> Dict[str, Any]:
+        """Calculates adaptive dynamic hold-down debounce periods and cascading suppression rules
+        by synthesizing closed outage cases, recurring flapping intervals, and paired lead-follow patterns.
+        """
+        self.sync_cases()
+        pats = self.patterns()
+
+        # 1. Cascading relationships (lead -> list of followers)
+        cascade_graph: Dict[str, List[Dict[str, Any]]] = {}
+        for p in pats:
+            if p.get("kind") == "together" and len(p.get("nodes", [])) == 2:
+                lead, follow = p["nodes"][0], p["nodes"][1]
+                cnt = p.get("count", 0)
+                m = re.search(r"follows within (\d+)\s*(s|min)", p.get("text", ""))
+                lag_s = 60
+                if m:
+                    val = int(m.group(1))
+                    unit = m.group(2)
+                    lag_s = val * 60 if unit == "min" else val
+                cascade_graph.setdefault(short(lead), []).append({
+                    "follower": short(follow),
+                    "full_follower": follow,
+                    "lead": short(lead),
+                    "full_lead": lead,
+                    "count": cnt,
+                    "lag_s": lag_s,
+                    "suppress_window_s": min(180, lag_s + 45)
+                })
+
+        # 2. Node profiles (duration, flapping, hold-down)
+        node_profiles: Dict[str, Dict[str, Any]] = {}
+        with self._connect() as db:
+            rows = [dict(r) for r in db.execute(
+                "SELECT node, duration_s, category, resolution, coalesce(onset, opened) AS opened FROM cases"
+            )]
+
+        by_node: Dict[str, List[dict]] = {}
+        for r in rows:
+            by_node.setdefault(r["node"], []).append(r)
+
+        seg_stats_by_node: Dict[str, List[dict]] = {}
+        try:
+            from metrics import store as metrics_store
+            mstore = metrics_store(self.path)
+            for sa in mstore.segment_alerts():
+                n_key = sa.get("node") or ""
+                s_key = short(n_key)
+                seg_stats_by_node.setdefault(s_key, []).append(sa)
+        except Exception:
+            pass
+
+        for node, cs in by_node.items():
+            s_name = short(node)
+            durations = [c["duration_s"] for c in cs if c["duration_s"] is not None]
+            outage_cnt = len(cs)
+            med_dur = statistics.median(durations) if durations else 20.0
+
+            seg_list = seg_stats_by_node.get(s_name, [])
+            total_raised = sum(sa.get("raised", 0) for sa in seg_list)
+            total_settled = sum(sa.get("clearedAlone", 0) for sa in seg_list)
+            settled_ratio = (total_settled / total_raised) if total_raised >= 5 else 0.5
+
+            # Dynamic Hold-Down calculation:
+            # If high self-settling or median outage is transient (<= 40s) with high frequency
+            is_flapper = (outage_cnt >= 10 and med_dur <= 40) or (settled_ratio >= 0.75)
+
+            if is_flapper:
+                hold_down_s = int(min(45, max(25, med_dur + 5)))
+            elif outage_cnt >= 3 and med_dur <= 20:
+                hold_down_s = int(min(25, max(15, med_dur + 3)))
+            else:
+                hold_down_s = 5
+
+            # Dynamic Audio Tuning learned from past MTTR, frequency & operator actions:
+            if med_dur <= 35:
+                # Short transient outage (e.g. ingest1 MTTR 27s): fast cadence, brief, anti-fatigue
+                speech_rate = 1.25
+                verbosity = "brief"
+                siren_notes = [440.0, 554.37]
+                speech_pitch = 0.95 if is_flapper else 1.02
+                chime_vol = 0.15
+            elif med_dur >= 180 or (outage_cnt <= 2 and not is_flapper):
+                # Rare, long fatal crash: authoritative, detailed diagnostic tone
+                speech_rate = 0.96
+                verbosity = "detailed"
+                siren_notes = [659.25, 880.0, 1108.73]
+                speech_pitch = 1.15
+                chime_vol = 0.28
+            else:
+                speech_rate = 1.05
+                verbosity = "standard"
+                siren_notes = [554.37, 440.0, 369.99]
+                speech_pitch = 1.02
+                chime_vol = 0.20
+
+            if is_flapper:
+                speech_pitch = min(speech_pitch, 0.94)
+                siren_notes = [440.0, 493.88]  # calm, non-screaming dual ping
+
+            learned_fix = next((c["resolution"] for c in cs if c.get("resolution")), "") or ""
+
+            node_profiles[s_name] = {
+                "node": node,
+                "short_name": s_name,
+                "outage_count": outage_cnt,
+                "median_duration_s": round(med_dur, 1),
+                "settled_ratio": round(settled_ratio, 2),
+                "is_flapper": is_flapper,
+                "hold_down_s": hold_down_s,
+                "flapping_threshold_minutes": 5 if is_flapper else 15,
+                "audio_tuning": {
+                    "speech_rate": round(speech_rate, 2),
+                    "speech_pitch": round(speech_pitch, 2),
+                    "verbosity": verbosity,
+                    "siren_notes": siren_notes,
+                    "chime_vol": round(chime_vol, 2),
+                    "learned_fix": learned_fix,
+                    "anti_fatigue": is_flapper,
+                    "mttr_s": round(med_dur, 1)
+                }
+            }
+
+        # Dynamic Audio Adaptation based on Time-of-Day Patterns in IST
+        utc_now = datetime.now(timezone.utc)
+        ist_now = utc_now.astimezone(IST)
+        ist_hour = ist_now.hour
+
+        # Night shift hours 02:00 to 06:00 IST (known high outage & break period, drowsiness risk)
+        is_night_shift = 2 <= ist_hour < 6
+        # Peak busy daytime office hours 10:00 to 18:00 IST (high ambient noise in control room)
+        is_busy_day = 10 <= ist_hour < 18
+
+        time_of_day_audio = {
+            "ist_hour": ist_hour,
+            "shift": "night" if is_night_shift else ("busy_day" if is_busy_day else "normal"),
+            "attention_chime_boost": 0.05 if is_night_shift else 0.0,
+            "volume_boost": 0.12 if is_busy_day else 0.0,
+            "pitch_mod": 0.04 if is_night_shift else 0.0
+        }
+
+        return {
+            "node_profiles": node_profiles,
+            "cascade_graph": cascade_graph,
+            "time_of_day": time_of_day_audio,
+            "updated_at": time.time()
+        }
+
+    def record_alert_outcome(self, node: str, outcome: str) -> bool:
+        """Records alert outcome feedback to self-tune segment_alerts and learning store priors."""
+        try:
+            from metrics import store as metrics_store
+            mstore = metrics_store(self.path)
+            # Exact match: the server's domain, or a URL on it (never a name that merely contains the text,
+            # e.g. "gtc" must not hit "gtcpunjabi"). Each outcome counts one alert raised and its ending.
+            where = "WHERE node = ? OR url LIKE ? OR url LIKE ?"
+            args = (node, f"%://{node}/%", f"%://{node}:%")
+            column = {"settled_alone": "cleared_alone", "real_outage": "before_outage",
+                      "silenced_fast": "cleared_alone"}.get(outcome)
+            if not column:
+                return False
+            with mstore._connect() as db:
+                db.execute(f"UPDATE segment_alerts SET raised = raised + 1, {column} = {column} + 1 {where}", args)
+            return True
+        except Exception:
+            return False
 
 
 

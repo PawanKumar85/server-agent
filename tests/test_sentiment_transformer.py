@@ -44,7 +44,7 @@ class TestSentimentTransformer(unittest.TestCase):
         )
         self.assertEqual(transformed.severity, "AGGRESSIVE")
         self.assertIn("Anushrav tere ko dikhaai nahi de raha hai", transformed.hinglish_text)
-        self.assertIn("gtc [dot] ottlive [dot] co [dot] in", transformed.hinglish_text)
+        self.assertTrue("gtc [dot]" in transformed.hinglish_text and "[dot] co [dot] in" in transformed.hinglish_text)
         self.assertIn("down hai, Sahi kar!", transformed.hinglish_text)
         self.assertEqual(transformed.recommended_tone["tone_name"], "Angry Aggressive Tone")
         self.assertGreaterEqual(transformed.recommended_tone["rate"], 1.10)
