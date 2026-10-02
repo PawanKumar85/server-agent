@@ -1,0 +1,50 @@
+# Environments & Secrets
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual Environment
+.venv/
+venv/
+ENV/
+env/
+
+# Testing & Linting
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local Runtime State & SQLite Databases
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+scheduler.json
+embeddings_cron.json
+cron_*.log
+*.log
+state/*
+!state/.gitkeep
+
+# Archives & Temporary Dumps
+*.zip
+*.tar.gz
+backups/*
+!backups/.gitkeep
+
+# OS & Editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+.cache/
+
+# Browser automation scratch
+.chrome-tmp/

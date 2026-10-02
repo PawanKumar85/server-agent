@@ -1,0 +1,92 @@
+# Local Neo4j + the Stream Graph app.
+#
+#   docker compose up -d --build        start (first run builds the app image)
+#   python copy_from_aura.py            one-off: copy the graph from Aura into this Neo4j
+#   open http://localhost:8080          dashboard      (Neo4j Browser: http://localhost:7474)
+#   docker compose down                 stop (data is kept in the neo4j_data volume)
+#   ./backups/                          nightly copies of the history/learning DB and the graph (last 7 kept)
+#
+# Needs in .env: NEO4J_LOCAL_PASSWORD (at least 8 characters, only for this local Neo4j) and the
+# dashboard login APP_LOGIN_EMAIL / APP_LOGIN_PASSWORD / APP_SECRET_KEY. NEO4J_URI/USERNAME/PASSWORD
+# in .env keep pointing at Aura for the copy script.
+
+name: stream-graph
+
+services:
+  neo4j:
+    image: neo4j:2026.09.0          # Community edition (docs: neo4j.com/docs/operations-manual/current/docker)
+    restart: unless-stopped
+    environment:
+      NEO4J_AUTH: neo4j/${NEO4J_LOCAL_PASSWORD:?Set NEO4J_LOCAL_PASSWORD in .env}
+      # A few dozen nodes: a small heap and page cache are plenty (the defaults took ~1.3 GB of RAM).
+      NEO4J_server_memory_heap_initial__size: 256m
+      NEO4J_server_memory_heap_max__size: 512m
+      NEO4J_server_memory_pagecache_size: 256m
+    ports:
+      # This Mac only: the app reaches Neo4j over Docker's own network, so other devices on the Wi-Fi
+      # have no business connecting to the database directly.
+      - "127.0.0.1:7474:7474"       # Neo4j Browser
+      - "127.0.0.1:7687:7687"       # Bolt
+    volumes:
+      - neo4j_data:/data            # the database (survives restarts and `down`)
+      - neo4j_logs:/logs
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:7474 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+
+  # Throwaway Neo4j for the test suite only (in memory, this Mac only). Not started by `docker compose up`:
+  #   docker compose --profile test up -d neo4j-test     then   pytest   (tests use it when it's running)
+  neo4j-test:
+    image: neo4j:2026.09.0
+    profiles: ["test"]
+    environment:
+      NEO4J_AUTH: neo4j/test-password-only
+      NEO4J_server_memory_heap_max__size: 512m
+      NEO4J_server_memory_pagecache_size: 128m
+    ports:
+      - "127.0.0.1:7688:7687"
+    tmpfs:
+      - /data
+
+  app:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      neo4j:
+        condition: service_healthy   # wait until Neo4j accepts connections
+    environment:
+      NEO4J_URI: neo4j://neo4j:7687
+      NEO4J_USERNAME: neo4j
+      NEO4J_PASSWORD: ${NEO4J_LOCAL_PASSWORD:?Set NEO4J_LOCAL_PASSWORD in .env}
+      # dashboard login (every page and API route requires it)
+      APP_LOGIN_EMAIL: ${APP_LOGIN_EMAIL:?Set APP_LOGIN_EMAIL in .env}
+      APP_LOGIN_PASSWORD: ${APP_LOGIN_PASSWORD:?Set APP_LOGIN_PASSWORD in .env}
+      APP_SECRET_KEY: ${APP_SECRET_KEY:?Set APP_SECRET_KEY in .env}
+      # ChatBot + node AI RCA: models on OpenRouter (https://openrouter.ai/keys)
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENROUTER_API_KEYS: ${OPENROUTER_API_KEYS:-}
+      CHATBOT_MODEL: ${CHATBOT_MODEL:-qwen/qwen3.8-27b}
+      # Voice alerts: who the alerts address (the phrases are pre-recorded; no API calls)
+      VOICE_OPERATOR_NAME: ${VOICE_OPERATOR_NAME:-Anushrav}
+      RCA_MODEL: ${RCA_MODEL:-}   # empty: same as CHATBOT_MODEL
+      HF_HUB_OFFLINE: "1"   # the embedding model is baked into the image
+      # LangSmith AI & GraphRAG Tracing (optional)
+      LANGSMITH_TRACING: ${LANGSMITH_TRACING:-false}
+      LANGSMITH_API_KEY: ${LANGSMITH_API_KEY:-}
+      LANGSMITH_PROJECT: ${LANGSMITH_PROJECT:-stream-graph}
+      LANGSMITH_ENDPOINT: ${LANGSMITH_ENDPOINT:-https://api.smith.langchain.com}
+    ports:
+      - "${APP_PORT:-8080}:8000"     # dashboard; 8080 so it doesn't clash with a local `uvicorn` on 8000
+    volumes:
+      - app_state:/app/state        # auto-ping on/off + interval, metrics.db (history, learning)
+      - ./backups:/app/backups      # nightly backups land in this folder on the Mac (backup.py)
+    sysctls:
+      net.ipv4.ping_group_range: "0 2147483647"   # lets the spider's unprivileged ICMP ping work in the container
+
+volumes:
+  neo4j_data:
+  neo4j_logs:
+  app_state:

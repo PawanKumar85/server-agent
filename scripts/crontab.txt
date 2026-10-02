@@ -1,0 +1,3 @@
+# Weekly Cron Job for Node & Spider Embeddings
+# Runs every Sunday at 00:00 (midnight) to regenerate and sync all 384-dim embeddings
+0 0 * * 0 /usr/bin/env python /Users/pawankumar/Desktop/System-eng/ping/embeddings.py >> /Users/pawankumar/Desktop/System-eng/ping/cron_embeddings.log 2>&1

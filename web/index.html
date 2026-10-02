@@ -1,0 +1,1163 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Stream Graph</title>
+  <link rel="icon"
+    href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📡</text></svg>">
+  <script>
+    (function () {
+      try {
+        var t = localStorage.getItem("stream_graph_theme") || "system";
+        if (t === "dark" || t === "light") {
+          document.documentElement.setAttribute("data-theme", t);
+        } else {
+          document.documentElement.removeAttribute("data-theme");
+        }
+      } catch (e) {}
+    })();
+  </script>
+  <link rel="stylesheet" href="/static/styles.css?v=12">
+</head>
+
+<body>
+  <aside class="sidebar">
+    <div class="brand"><span class="brand-mark">📡</span><span class="brand-name">Stream Graph</span></div>
+    <nav>
+      <button class="nav-item active" data-view="workflow"><span class="ico">◇</span><span>Workflow</span></button>
+      <button class="nav-item" data-view="servers"><span class="ico">▦</span><span>Servers</span></button>
+      <button class="nav-item" data-view="spiders"><span class="ico">🕷</span><span>Spiders</span></button>
+      <button class="nav-item" data-view="links"><span class="ico">＋</span><span>Links</span></button>
+      <button class="nav-item" data-view="relationships"><span class="ico">⇢</span><span>Relationships</span></button>
+      <button class="nav-item" data-view="agent"><span class="ico">🤖</span><span>Agent</span></button>
+      <button class="nav-item" data-view="learning"><span class="ico">🧠</span><span>Learning</span></button>
+    </nav>
+    <div class="nav-notification-group">
+      <button class="nav-item" data-view="notifications" id="nav-btn-notifications" title="Alert & Incident Notifications">
+        <span class="ico">🔔</span>
+        <span>Notifications</span>
+        <span class="subnav-pill" id="sidebar-notif-pill">0</span>
+      </button>
+      <div class="nav-subitems" id="nav-notif-subitems" hidden>
+        <button class="nav-subitem" data-notif-filter="email" title="Email Alert Nodes">
+          <span class="ico">📧</span><span>Email</span>
+          <span class="sub-pill" id="sub-count-email">0</span>
+        </button>
+        <button class="nav-subitem" data-notif-filter="whatsapp" title="WhatsApp Alert Nodes">
+          <span class="ico">💬</span><span>Whatsapp</span>
+          <span class="sub-pill" id="sub-count-whatsapp">0</span>
+        </button>
+        <button class="nav-subitem" data-notif-filter="sms" title="SMS Alert Nodes">
+          <span class="ico">📱</span><span>SMS</span>
+          <span class="sub-pill" id="sub-count-sms">0</span>
+        </button>
+      </div>
+    </div>
+    <a class="nav-item signout" href="/logout" title="Sign out"><span class="ico">⎋</span><span>Sign out</span></a>
+  </aside>
+
+  <div class="app">
+    <header class="topbar">
+      <h1 id="view-title">Workflow</h1>
+      <div class="counts">
+        <span class="pill"><i class="dot" style="background:var(--RUNNING)"></i><b id="count-running">–</b>
+          active</span>
+        <span class="pill"><i class="dot" style="background:var(--STOPPED)"></i><b id="count-stopped">–</b>
+          stopped</span>
+        <span class="pill"><i class="dot" style="background:var(--ERROR)"></i><b id="count-error">–</b> errors</span>
+      </div>
+      <div class="actions">
+        <!-- This server's RAM and CPU, like Colab's resource meter (sys-usage.js) -->
+        <div class="sys-usage" id="sys-usage" role="group" aria-label="Server RAM and CPU" tabindex="0" hidden>
+          <div class="sys-row" id="sys-ram"><span class="sys-label">RAM</span><span class="sys-bar"><i></i></span><span class="sys-val">–</span></div>
+          <div class="sys-row" id="sys-cpu"><span class="sys-label">CPU</span><span class="sys-bar"><i></i></span><span class="sys-val">–</span></div>
+        </div>
+        <!-- Theme Toggler (Light / Dark / System) -->
+        <div class="theme-segmented" id="theme-segmented" role="radiogroup" aria-label="Theme mode">
+          <button type="button" class="theme-seg-btn" data-theme-val="light" title="Switch to Light Theme">
+            <span class="theme-ico">☀️</span>
+            <span class="theme-txt">Light</span>
+          </button>
+          <button type="button" class="theme-seg-btn" data-theme-val="dark" title="Switch to Dark Theme">
+            <span class="theme-ico">🌙</span>
+            <span class="theme-txt">Dark</span>
+          </button>
+          <button type="button" class="theme-seg-btn active" data-theme-val="system" title="Sync with System Theme">
+            <span class="theme-ico">💻</span>
+            <span class="theme-txt">System</span>
+          </button>
+        </div>
+        <!-- Voice Alerts (Hinglish TTS for Final Node) -->
+        <div class="tts-ctrl-group" style="display:inline-flex;align-items:center;gap:4px;">
+          <button type="button" class="btn active" id="btn-tts-toggle" title="Final Node Hinglish Voice Alerts: ON (Click to Mute, Shift+Click to Test)">
+            <span id="tts-icon">🔊</span>
+            <span id="tts-label">Voice: ON</span>
+          </button>
+        </div>
+
+        <a class="btn" id="export" href="/api/export.xlsx" download
+          title="Export: download an Excel workbook with channels, nodes and relationships">⬇ Export</a>
+        <button class="btn" id="btn-import-excel" title="Import channels and links from an Excel spreadsheet (.xlsx)">⬆
+          Import</button>
+        <input type="file" id="file-import-excel" accept=".xlsx, .xls" hidden>
+      </div>
+    </header>
+
+    <main>
+      <!-- Workflow -->
+      <section class="view active" id="view-workflow">
+        <div id="canvas">
+          <div class="canvas-search" id="canvas-search-box" role="search">
+            <span class="canvas-search-ico" aria-hidden="true">⌕</span>
+            <input type="search" id="canvas-search" placeholder="Search server, channel, URL…" autocomplete="off"
+              spellcheck="false" aria-label="Search the graph (press / to focus)" title="Press / to search · Enter to zoom to the matches">
+            <span class="canvas-search-info" id="canvas-search-info" aria-live="polite" hidden></span>
+            <button type="button" class="canvas-search-clear" id="canvas-search-clear" aria-label="Clear search" hidden>×</button>
+          </div>
+          <div id="canvas-top">
+            <div id="legend"></div>
+          </div>
+          <div id="world"><svg id="edges"></svg></div>
+          <div id="toolbar">
+            <button id="fit">Fit</button><button id="zin">+</button><button id="zout">−</button>
+            <button id="btn-toggle-heatmap" title="Toggle Uptime Timeline Matrix">📊 Uptime Matrix</button>
+            <button id="btn-sync-embeddings"
+              title="Embeddings &amp; Log Clearance: recompute every node's 384-dim embedding, archive each server's incident log into its totals and clear the raw log (also runs weekly)">⚡
+              Sync Embeddings</button>
+            <button id="replay" disabled title="Replay the last run">▶ Replay</button>
+          </div>
+          <div id="heatmap-panel" class="matrix-panel collapsed">
+            <header>
+              <div class="title"><span class="matrix-icon">📊</span><span>Uptime Matrix</span></div>
+              <div class="matrix-tabs">
+                <button class="tab-btn active" id="matrix-tab-all" title="Unified Channels &amp; Pipeline Trees">All</button>
+                <button class="tab-btn" id="matrix-tab-channels" title="Channels Only">Channels</button>
+                <button class="tab-btn" id="matrix-tab-nodes" title="Infrastructure Servers">Infra</button>
+              </div>
+              <div class="widget-controls">
+                <button id="heatmap-expand" title="Fullscreen / Expand Matrix">⛶</button>
+                <button id="heatmap-refresh" title="Refresh Matrix">↻</button>
+                <button class="toggle" id="heatmap-toggle" title="Minimize / Expand">▴</button>
+              </div>
+            </header>
+            <div class="heatmap-body matrix-body">
+              <div class="matrix-legend">
+                <div class="legend-items">
+                  <span class="legend-item"><i class="dot ok"></i>&lt;150ms</span>
+                  <span class="legend-item"><i class="dot mid"></i>150-300ms</span>
+                  <span class="legend-item"><i class="dot slow"></i>&gt;300ms</span>
+                  <span class="legend-item"><i class="dot fail"></i>Down</span>
+                  <span class="legend-item"><i class="dot blip"></i>Blip</span>
+                </div>
+                <span class="badge-down ok" id="heatmap-down-badge">All operational</span>
+              </div>
+              <div class="matrix-grid-wrap" id="matrix-grid">
+                <!-- Dynamically populated with status strips -->
+              </div>
+            </div>
+          </div>
+          <div id="db-panel" class="collapsed">
+            <header><span>Database</span><button class="toggle" title="Show / hide">▸</button></header>
+            <div class="types">
+              <h4>Node labels</h4>
+              <div class="chips-row" id="label-chips"></div>
+              <h4>Relationship types</h4>
+              <div class="chips-row" id="type-chips"></div>
+              <div class="hint">Click a label or type to highlight it</div>
+            </div>
+          </div>
+          <div id="log" class="collapsed">
+            <header title="Show / hide"><span>Execution log</span><span class="state"></span></header>
+            <ol></ol>
+          </div>
+          <div id="detail"><button class="close" title="Close">×</button>
+            <div id="detail-body"></div>
+          </div>
+          <div id="canvas-empty" hidden>No nodes yet. Add links in <b>Links</b>.</div>
+        </div>
+      </section>
+
+      <!-- Spiders -->
+      <section class="view" id="view-spiders">
+        <p class="lead">One spider per FinalLink walks upstream (Final → Transcoding → Main/Backup), health-checks each
+          node
+          and stops at the root cause. Main and Backup are alternatives: one healthy input is enough.</p>
+        <div id="spider-cards" class="cards"></div>
+      </section>
+
+      <!-- Links -->
+      <section class="view" id="view-links">
+        <p class="lead">Add stream links. Links on the same domain become one node; each URL keeps its own role and
+          channel.</p>
+        <div class="card-block">
+          <table class="grid" id="links-table">
+            <thead>
+              <tr>
+                <th style="width:18%">Channel</th>
+                <th style="width:18%">Role</th>
+                <th>URL</th>
+                <th style="width:40px"></th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+          <div class="row-actions">
+            <button class="btn" id="links-add">＋ Add row</button>
+            <button class="btn" id="links-import-excel" title="Import links from Excel spreadsheet (.xlsx)">⬆ Import
+              Excel</button>
+            <span class="spacer"></span>
+            <button class="btn" id="links-preview">Preview</button>
+            <button class="btn primary" id="links-save">Save links</button>
+          </div>
+          <div id="links-msg"></div>
+          <div id="links-preview-out"></div>
+        </div>
+        <h3>Nodes in Neo4j</h3>
+        <div class="card-block">
+          <table class="grid" id="nodes-table">
+            <thead>
+              <tr>
+                <th>Domain</th>
+                <th>Roles</th>
+                <th>Status</th>
+                <th>Channels</th>
+                <th>URLs</th>
+                <th>Pings</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- Relationships -->
+      <section class="view" id="view-relationships">
+        <p class="lead">Media flow between domains: MainInput/BackupLink <b>FEEDS</b> a Transcoding (or a FinalLink
+          directly
+          when there's no transcoder); a Transcoding <b>PRODUCES</b> a FinalLink. This table is the full topology — rows
+          you
+          delete are removed from Neo4j on save.</p>
+        <div class="card-block">
+          <table class="grid" id="rels-table">
+            <thead>
+              <tr>
+                <th>Source (upstream)</th>
+                <th style="width:150px">Type</th>
+                <th>Target (downstream)</th>
+                <th style="width:40px"></th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+          <div class="row-actions">
+            <button class="btn" id="rels-add">＋ Add relationship</button>
+            <span class="spacer"></span>
+            <button class="btn" id="rels-reload">Reload</button>
+            <button class="btn primary" id="rels-save">Save relationships</button>
+          </div>
+          <div id="rels-msg"></div>
+        </div>
+      </section>
+      <!-- Agent -->
+      <section class="view" id="view-agent">
+        <div class="chat" id="agent">
+          <div class="agent-subnav">
+            <div class="agent-subnav-tabs">
+              <button type="button" class="agent-subnav-tab active" data-subview="agent">
+                <span class="ico">🤖</span>
+                <span>Agent</span>
+              </button>
+              <button type="button" class="agent-subnav-tab" data-subview="tools" id="chat-tools-btn" title="System Diagnostics, Reporting & Autonomous Tools">
+                <span class="ico">🛠</span>
+                <span>Tools</span>
+                <span class="subnav-pill">15</span>
+              </button>
+              <button type="button" class="agent-subnav-tab" data-subview="skills" id="chat-skills-btn" title="Engineering Knowledge & Architecture Playbooks">
+                <span class="ico">🧠</span>
+                <span>Skills</span>
+                <span class="subnav-pill">7</span>
+              </button>
+            </div>
+            <div class="agent-subnav-actions">
+              <span id="agent-keypool-badge" class="agent-keypool-pill" style="display:none;font-size:11px;padding:3px 9px;border-radius:12px;background:rgba(52,211,153,0.12);border:1px solid rgba(52,211,153,0.3);color:var(--good);align-items:center;gap:6px;" title="Strategy B: Round-Robin Rotation (Active-Active)">
+                <span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--good);"></span>
+                <span id="agent-keypool-text">Round-Robin Active</span>
+              </span>
+              <div class="chat-history-wrap">
+                <button class="btn small" id="chat-history-btn" title="Earlier conversations" aria-haspopup="true" aria-expanded="false">🕘 History</button>
+                <div class="chat-history" id="chat-history" hidden></div>
+              </div>
+              <button class="btn small" id="chat-new" title="Start a new conversation">＋ New chat</button>
+            </div>
+          </div>
+          <div id="chat-setup" class="chat-setup" hidden>
+            <b>The Agent uses an LLM on OpenRouter.</b> <span id="chat-setup-text"></span>
+            Create keys at <a href="https://openrouter.ai/keys" target="_blank" rel="noopener">openrouter.ai/keys</a>,
+            add <code>OPENROUTER_API_KEYS=key1,key2,…</code> or <code>OPENROUTER_API_KEY=…</code> to <code>.env</code>, then run <code>docker compose up -d app</code>.
+          </div>
+
+          <!-- Live briefing: written from the current state of the network (agent-briefing.js) -->
+          <div class="agent-briefing" id="agent-briefing" aria-live="polite">
+            <p class="agent-briefing-text" id="agent-briefing-text">Reading the network…</p>
+            <p class="agent-briefing-note" id="agent-briefing-note"></p>
+            <div class="agent-rc" id="agent-rc" hidden></div>
+            <div class="upnext" id="agent-upnext" hidden></div>
+          </div>
+
+          <!-- One tile per channel with its tally lamp; stays pinned above the conversation -->
+          <div class="agent-tally" id="agent-tally" role="list" aria-label="Channels"></div>
+
+          <div id="chat-log" class="chat-log" aria-live="polite">
+            <div class="chat-empty" id="chat-empty">
+              <div class="agent-quick-hubs">
+                <a class="agent-hub-card" href="/agent/tools" data-nav-view="tools" title="Open Agent Tools">
+                  <div class="hub-icon">🛠</div>
+                  <div class="hub-info">
+                    <h4>Agent Tools (/agent/tools)</h4>
+                    <p>14 autonomous diagnostics, reporting, Excel exporter &amp; mutation tools</p>
+                  </div>
+                  <span class="hub-arrow">→</span>
+                </a>
+                <a class="agent-hub-card" href="/agent/skills" data-nav-view="skills" title="Open Agent Skills">
+                  <div class="hub-icon">🧠</div>
+                  <div class="hub-info">
+                    <h4>Agent Skills (/agent/skills)</h4>
+                    <p>OTT architecture manual, HLS telemetry playbooks &amp; graph database specs</p>
+                  </div>
+                  <span class="hub-arrow">→</span>
+                </a>
+              </div>
+              <h2 class="agent-prompts-title">Ask about what's happening</h2>
+              <ul class="agent-prompts" id="agent-prompts"></ul>
+              <section class="agent-memory" id="agent-memory" aria-labelledby="agent-memory-title">
+                <h2 class="agent-prompts-title" id="agent-memory-title">What I've learned</h2>
+                <p class="agent-memory-sub" id="agent-memory-sub">From past outages and your feedback.</p>
+                <ul class="agent-memory-list" id="agent-memory-patterns"></ul>
+                <h3 class="agent-memory-h">Facts you told me</h3>
+                <ul class="agent-memory-list" id="agent-memory-facts"></ul>
+                <form class="agent-memory-add" id="agent-memory-add">
+                  <input type="text" id="agent-memory-input" maxlength="500" placeholder="Teach me something, e.g. xcode2 restarts every night at 03:00" aria-label="New fact">
+                  <button type="submit" class="btn small">Remember</button>
+                </form>
+              </section>
+            </div>
+          </div>
+          <form id="chat-form" class="chat-form">
+            <div class="chat-tools-wrapper">
+              <button type="button" class="btn-chat-plus" id="btn-chat-tools-plus" title="Available Tools (ChatGPT-style)" aria-label="Tools menu">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                  <line x1="12" y1="5" x2="12" y2="19"></line>
+                  <line x1="5" y1="12" x2="19" y2="12"></line>
+                </svg>
+              </button>
+              <div class="chat-tools-dropdown" id="chat-tools-dropdown" hidden>
+                <div class="chat-tools-dropdown-header">
+                  <div class="chat-tools-dropdown-title">
+                    <span>🛠 Available Tools</span>
+                    <span class="chat-tools-count-pill" id="chat-tools-count-pill">14</span>
+                  </div>
+                  <input type="text" class="chat-tools-search" id="chat-tools-search" placeholder="Search tools…" autocomplete="off">
+                </div>
+                <div class="chat-tools-dropdown-items" id="chat-tools-dropdown-items">
+                  <!-- Populated dynamically from /api/tools -->
+                </div>
+              </div>
+            </div>
+
+            <!-- ChatGPT-style Slash Command Skills Menu -->
+            <div class="chat-skills-slash-menu" id="chat-skills-slash-menu" hidden>
+              <div class="chat-slash-header">
+                <span class="chat-slash-title">🧠 Project Skills &amp; Playbooks</span>
+                <span class="chat-slash-hint">↑↓ navigate · Enter to select · Esc to cancel</span>
+              </div>
+              <div class="chat-slash-list" id="chat-slash-list">
+                <!-- Dynamically rendered on typing / -->
+              </div>
+            </div>
+
+            <textarea id="chat-input" rows="1" maxlength="2000"
+              placeholder="Ask about a channel, a server or an outage"></textarea>
+            <button class="btn primary" id="chat-send" type="submit">Send</button>
+          </form>
+          <p class="agent-hint" id="agent-hint">Type <kbd>/</kbd> for a playbook, or use <kbd>+</kbd> to run a tool directly.</p>
+        </div>
+      </section>
+
+      <!-- Tools -->
+      <section class="view" id="view-tools">
+        <div class="agent-subnav" style="margin-bottom: 16px;">
+          <div class="agent-subnav-tabs">
+            <button type="button" class="agent-subnav-tab" data-subview="agent">
+              <span class="ico">🤖</span>
+              <span>Agent</span>
+            </button>
+            <button type="button" class="agent-subnav-tab active" data-subview="tools">
+              <span class="ico">🛠</span>
+              <span>Tools</span>
+              <span class="subnav-pill">15</span>
+            </button>
+            <button type="button" class="agent-subnav-tab" data-subview="skills">
+              <span class="ico">🧠</span>
+              <span>Skills</span>
+              <span class="subnav-pill">7</span>
+            </button>
+          </div>
+        </div>
+        <p class="lead">System Diagnostics, Reporting &amp; Autonomous LLM Tooling. All tools are directly executable here or callable conversationally via the <b>Agent</b>.</p>
+        <div class="tools-grid" id="tools-grid-dynamic">
+          <!-- 1. Report Generator -->
+          <div class="tool-card">
+            <div>
+              <div class="tool-header">
+                <div class="tool-title-wrap">
+                  <span class="tool-icon">📄</span>
+                  <div>
+                    <h3 class="tool-title">Full Monitoring Report</h3>
+                    <div style="font-size:11px;color:var(--muted)"><code>generate_report</code></div>
+                  </div>
+                </div>
+                <span class="tool-tag">Reporting</span>
+              </div>
+              <p class="tool-desc">Generates complete interactive HTML reports with latency charts, per-URL HTTP telemetry, incident timeline, network traceroutes, and stored fields. Includes deep AI root-cause synthesis.</p>
+            </div>
+            <div class="tool-actions">
+              <a class="btn primary small" href="/api/report.html" target="_blank" rel="noopener">📄 Open Full Report</a>
+              <button class="btn small btn-chat-tool" data-prompt="Generate a complete monitoring report of all nodes">🤖 Ask Agent</button>
+            </div>
+          </div>
+
+          <!-- 2. Excel Workbook -->
+          <div class="tool-card">
+            <div>
+              <div class="tool-header">
+                <div class="tool-title-wrap">
+                  <span class="tool-icon">📊</span>
+                  <div>
+                    <h3 class="tool-title">Excel Topology Workbook</h3>
+                    <div style="font-size:11px;color:var(--muted)"><code>generate_excel</code></div>
+                  </div>
+                </div>
+                <span class="tool-tag">Export</span>
+              </div>
+              <p class="tool-desc">Exports full production spreadsheet (.xlsx) with all stream channels, server links, IPs, health telemetry, and flow relationships (FEEDS, PRODUCES, AT).</p>
+            </div>
+            <div class="tool-actions">
+              <a class="btn primary small" href="/api/export.xlsx" download>⬇ Download .xlsx</a>
+              <button class="btn small btn-chat-tool" data-prompt="Export full Excel workbook with links and relationships">🤖 Ask Agent</button>
+            </div>
+          </div>
+
+          <!-- 3. Risk Forecast -->
+          <div class="tool-card">
+            <div>
+              <div class="tool-header">
+                <div class="tool-title-wrap">
+                  <span class="tool-icon">🔮</span>
+                  <div>
+                    <h3 class="tool-title">Predictive Failure Risk</h3>
+                    <div style="font-size:11px;color:var(--muted)"><code>get_risk_forecast</code></div>
+                  </div>
+                </div>
+                <span class="tool-tag" style="color:var(--accent);border-color:color-mix(in srgb, var(--accent) 40%, transparent)">ML Predictor</span>
+              </div>
+              <p class="tool-desc">Live predictive failure scoring blending Z-score telemetry anomalies (jitter, freshness, loss) with historical MTBF, MTTR, and failure patterns to forecast potential stream outages.</p>
+            </div>
+            <div class="tool-actions">
+              <button class="btn primary small btn-chat-tool" data-prompt="Which channels or nodes have the highest failure risk right now? Show risk assessment.">🔮 Run Risk Assessment</button>
+              <a class="btn small" href="/api/predictions" target="_blank" rel="noopener">View JSON API</a>
+            </div>
+          </div>
+
+          <!-- 4. Spider Crawl -->
+          <div class="tool-card">
+            <div>
+              <div class="tool-header">
+                <div class="tool-title-wrap">
+                  <span class="tool-icon">🕷</span>
+                  <div>
+                    <h3 class="tool-title">On-Demand Spider Crawl</h3>
+                    <div style="font-size:11px;color:var(--muted)"><code>trigger_channel_crawl</code></div>
+                  </div>
+                </div>
+                <span class="tool-tag">Diagnostics</span>
+              </div>
+              <p class="tool-desc">Triggers an immediate upstream traversal walk for all output channels or a specific channel to health-check nodes and trace failure root causes in real-time.</p>
+            </div>
+            <div class="tool-actions">
+              <button class="btn primary small" id="btn-tools-run-spiders">▶ Run All Spiders</button>
+              <button class="btn small btn-chat-tool" data-prompt="Trigger an immediate spider health crawl on all channels">💬 Trigger via Bot</button>
+            </div>
+          </div>
+
+          <!-- 5. Root Cause Ranking -->
+          <div class="tool-card">
+            <div>
+              <div class="tool-header">
+                <div class="tool-title-wrap">
+                  <span class="tool-icon">🎯</span>
+                  <div>
+                    <h3 class="tool-title">Root Cause Ranking (RCA)</h3>
+                    <div style="font-size:11px;color:var(--muted)"><code>get_root_cause_ranking</code></div>
+                  </div>
+                </div>
+                <span class="tool-tag">RCA Engine</span>
+              </div>
+              <p class="tool-desc">Graph-aware root-cause ranking algorithms that group and isolate current outage points, identifying the primary culprit server vs downstream collateral damage.</p>
+            </div>
+            <div class="tool-actions">
+              <button class="btn primary small btn-chat-tool" data-prompt="What is the root cause of any current stopped streams or outages? Rank the culprits.">🎯 Diagnose Root Causes</button>
+              <a class="btn small" href="/api/rca/ranking" target="_blank" rel="noopener">Ranking API</a>
+            </div>
+          </div>
+
+          <!-- 6. Early Warning Anomalies -->
+          <div class="tool-card">
+            <div>
+              <div class="tool-header">
+                <div class="tool-title-wrap">
+                  <span class="tool-icon">⚡</span>
+                  <div>
+                    <h3 class="tool-title">Early Warning Radar</h3>
+                    <div style="font-size:11px;color:var(--muted)"><code>get_early_warnings</code></div>
+                  </div>
+                </div>
+                <span class="tool-tag">Telemetry</span>
+              </div>
+              <p class="tool-desc">Continuous anomaly detection on active servers comparing latency jitter, HLS manifest freshness, and ICMP drops against learned baselines before an outage manifests.</p>
+            </div>
+            <div class="tool-actions">
+              <button class="btn primary small btn-chat-tool" data-prompt="Are there any early warning signals or abnormal metrics on our servers right now?">⚡ Scan Anomalies</button>
+              <a class="btn small" href="/api/anomalies" target="_blank" rel="noopener">Anomalies API</a>
+            </div>
+          </div>
+
+          <!-- 7. Traceroute -->
+          <div class="tool-card">
+            <div>
+              <div class="tool-header">
+                <div class="tool-title-wrap">
+                  <span class="tool-icon">🌐</span>
+                  <div>
+                    <h3 class="tool-title">Network Hop Traceroute</h3>
+                    <div style="font-size:11px;color:var(--muted)"><code>run_traceroute</code></div>
+                  </div>
+                </div>
+                <span class="tool-tag">Network</span>
+              </div>
+              <p class="tool-desc">Runs automated background ICMP and network hop traversal to target stream nodes to identify routing anomalies, latency spikes, and intermediate packet drops.</p>
+            </div>
+            <div class="tool-actions">
+              <button class="btn primary small btn-chat-tool" data-prompt="Run traceroute to stream.ottlive.co.in and analyze hop latency">🌐 Run via Bot</button>
+            </div>
+          </div>
+
+          <!-- 8. Failover & Redundancy Inspector -->
+          <div class="tool-card">
+            <div>
+              <div class="tool-header">
+                <div class="tool-title-wrap">
+                  <span class="tool-icon">🛡️</span>
+                  <div>
+                    <h3 class="tool-title">Failover &amp; Redundancy</h3>
+                    <div style="font-size:11px;color:var(--muted)"><code>check_failover_status</code></div>
+                  </div>
+                </div>
+                <span class="tool-tag">Redundancy</span>
+              </div>
+              <p class="tool-desc">Monitors whether streams are running on MainInput or BackupLink, alerts on active failover states, and flags channels lacking backup link redundancy.</p>
+            </div>
+            <div class="tool-actions">
+              <button class="btn primary small btn-chat-tool" data-prompt="Check failover status across all channels. Is any channel running on its backup link?">🛡️ Inspect Failover</button>
+            </div>
+          </div>
+
+          <!-- 9. Incident Timeline & Outage History -->
+          <div class="tool-card">
+            <div>
+              <div class="tool-header">
+                <div class="tool-title-wrap">
+                  <span class="tool-icon">📜</span>
+                  <div>
+                    <h3 class="tool-title">Incident Timeline History</h3>
+                    <div style="font-size:11px;color:var(--muted)"><code>get_incident_history</code></div>
+                  </div>
+                </div>
+                <span class="tool-tag">Incident Log</span>
+              </div>
+              <p class="tool-desc">Chronological query engine over all node incident logs. Extracts past OUTAGE, RECOVERY, and ESCALATED events with durations, error codes, and impacted URLs.</p>
+            </div>
+            <div class="tool-actions">
+              <button class="btn primary small btn-chat-tool" data-prompt="Show all past outage and recovery incidents recorded in the server logs">📜 View Outage Timeline</button>
+            </div>
+          </div>
+
+          <!-- 10. Topology Health & Orphan Link Audit -->
+          <div class="tool-card">
+            <div>
+              <div class="tool-header">
+                <div class="tool-title-wrap">
+                  <span class="tool-icon">🩺</span>
+                  <div>
+                    <h3 class="tool-title">Topology Health Audit</h3>
+                    <div style="font-size:11px;color:var(--muted)"><code>audit_topology</code></div>
+                  </div>
+                </div>
+                <span class="tool-tag">Graph Audit</span>
+              </div>
+              <p class="tool-desc">Audits the Neo4j graph for Single Points of Failure (channels with no backup inputs), orphan servers with no relationships, or broken media transcoding pipelines.</p>
+            </div>
+            <div class="tool-actions">
+              <button class="btn primary small btn-chat-tool" data-prompt="Audit our graph topology for channels lacking backup redundancy or orphan nodes">🩺 Run Topology Audit</button>
+            </div>
+          </div>
+
+          <!-- 11. Add Stream Link (CRUD with Double Confirmation) -->
+          <div class="tool-card">
+            <div>
+              <div class="tool-header">
+                <div class="tool-title-wrap">
+                  <span class="tool-icon">➕</span>
+                  <div>
+                    <h3 class="tool-title">Add Stream Link</h3>
+                    <div style="font-size:11px;color:var(--muted)"><code>add_stream_link</code></div>
+                  </div>
+                </div>
+                <span class="tool-tag" style="color:#f59e0b;border-color:color-mix(in srgb, #f59e0b 40%, transparent)">Safe Action · 2-Phase</span>
+              </div>
+              <p class="tool-desc">Registers a new server link or updates an existing domain entry with stream URL, channel name, and pipeline role. Automatically previews and requires two-phase confirmation before committing.</p>
+            </div>
+            <div class="tool-actions">
+              <button class="btn primary small btn-chat-tool" data-prompt="Add a new stream link for channel 'gtcnews' with role MainInput on jio.ottlive.co.in">➕ Add Link via Bot</button>
+            </div>
+          </div>
+
+          <!-- 12. Connect Pipeline Relationship (CRUD with Double Confirmation) -->
+          <div class="tool-card">
+            <div>
+              <div class="tool-header">
+                <div class="tool-title-wrap">
+                  <span class="tool-icon">🔗</span>
+                  <div>
+                    <h3 class="tool-title">Connect Pipeline Edge</h3>
+                    <div style="font-size:11px;color:var(--muted)"><code>connect_pipeline_relationship</code></div>
+                  </div>
+                </div>
+                <span class="tool-tag" style="color:#f59e0b;border-color:color-mix(in srgb, #f59e0b 40%, transparent)">Safe Action · 2-Phase</span>
+              </div>
+              <p class="tool-desc">Connects flow relationships (<code>FEEDS</code> or <code>PRODUCES</code>) between pipeline servers with role compatibility checking, topological validation, and confirmation review.</p>
+            </div>
+            <div class="tool-actions">
+              <button class="btn primary small btn-chat-tool" data-prompt="Connect pipeline relationship FEEDS from ingest.ottlive.co.in to transcode.ottlive.co.in">🔗 Connect via Bot</button>
+            </div>
+          </div>
+
+          <!-- 13. Update Stream Link (CRUD with Double Confirmation) -->
+          <div class="tool-card">
+            <div>
+              <div class="tool-header">
+                <div class="tool-title-wrap">
+                  <span class="tool-icon">✏️</span>
+                  <div>
+                    <h3 class="tool-title">Update Stream Link</h3>
+                    <div style="font-size:11px;color:var(--muted)"><code>update_stream_link</code></div>
+                  </div>
+                </div>
+                <span class="tool-tag" style="color:#f59e0b;border-color:color-mix(in srgb, #f59e0b 40%, transparent)">Safe Action · 2-Phase</span>
+              </div>
+              <p class="tool-desc">Modifies the channel mapping, role, or stream URL of an existing link on a server domain. Generates an interactive diff preview card for safety verification.</p>
+            </div>
+            <div class="tool-actions">
+              <button class="btn primary small btn-chat-tool" data-prompt="Update stream link on jio.ottlive.co.in for channel gtcnews">✏️ Update via Bot</button>
+            </div>
+          </div>
+
+          <!-- 14. Delete Node (Blast-Radius Double Confirmation) -->
+          <div class="tool-card" style="border-color:color-mix(in srgb, var(--down) 40%, var(--card-border))">
+            <div>
+              <div class="tool-header">
+                <div class="tool-title-wrap">
+                  <span class="tool-icon">🗑️</span>
+                  <div>
+                    <h3 class="tool-title">Delete Node (Blast-Radius)</h3>
+                    <div style="font-size:11px;color:var(--muted)"><code>delete_node</code></div>
+                  </div>
+                </div>
+                <span class="tool-tag" style="color:var(--down);border-color:color-mix(in srgb, var(--down) 40%, transparent)">Danger · High Impact</span>
+              </div>
+              <p class="tool-desc">Deletes a node from the topology and graph database. Pre-computes blast radius (severed inbound/outbound links, impacted channels, downstream breaks) and requires explicit confirmation card authorization.</p>
+            </div>
+            <div class="tool-actions">
+              <button class="btn danger small btn-chat-tool" data-prompt="Delete node jio.ottlive.co.in from the topology with blast radius preview">🗑️ Delete with Preview</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Servers: every server as a card, riskiest first (servers-view.js) -->
+      <section class="view" id="view-servers">
+        <div class="srv-head">
+          <p class="lead">Every server, riskiest first. The score combines whether it's down now, failing streams, being
+            the likely root cause, its predicted failure risk, its error rate and early warnings. Click a card for details.</p>
+        </div>
+        <p class="srv-notice" id="srv-notice" role="status" hidden></p>
+        <div class="upnext" id="srv-upnext" hidden></div>
+        <div class="srv-bands" id="srv-bands" role="group" aria-label="Filter by risk"></div>
+        <div class="srv-tools">
+          <input type="search" id="srv-search" placeholder="Filter by name, channel or role…" aria-label="Filter servers">
+          <span class="srv-count" id="srv-count" aria-live="polite"></span>
+        </div>
+        <div class="srv-grid" id="srv-grid"></div>
+      </section>
+
+      <!-- Learning: everything the agent learned from past outages and feedback (learning.py) -->
+      <section class="view" id="view-learning">
+        <div class="learn-head">
+          <p class="lead">What the agent has learned from past outages and from you. It uses all of this when it
+            answers and when it ranks the likely root cause.</p>
+          <button class="btn small" id="learn-refresh" title="Reload">↻ Refresh</button>
+        </div>
+        <div class="learn-stats" id="learn-stats" aria-live="polite"></div>
+
+        <h3>Patterns it found</h3>
+        <p class="learn-note">Counted from past outages. Something counts as a pattern once it has happened at least
+          <span data-setting="minPattern">2</span> times.</p>
+        <div class="card-block"><ul class="learn-list" id="learn-patterns"></ul></div>
+
+        <h3>Glitch prediction model</h3>
+        <p class="learn-note">A model trained on the saved history to predict a glitch or failure on each channel in
+          the next 10 minutes. It retrains every hour and is only used once it beats both chance and the best single
+          warning sign on recent data it hasn't seen; until then the statistical forecast works alone.</p>
+        <div class="card-block learn-model" id="learn-model"></div>
+
+        <h3>Ad-break patterns (SCTE-35)</h3>
+        <p class="learn-note">Learned from the last 7 days of ad-break markers on each channel's Final: when breaks
+          usually come, how long they run, and what looks wrong.</p>
+        <div class="card-block"><ul class="learn-list" id="learn-ads"></ul></div>
+
+        <h3>Facts you taught it</h3>
+        <p class="learn-note">Always included in its answers. Teach it here or say “remember that…” in the chat.</p>
+        <div class="card-block">
+          <ul class="learn-list" id="learn-facts"></ul>
+          <form class="learn-add" id="learn-fact-form">
+            <input type="text" id="learn-fact-input" maxlength="500" aria-label="New fact"
+              placeholder="e.g. xcode2 restarts every night at 03:00 IST">
+            <button type="submit" class="btn small primary">Remember</button>
+          </form>
+        </div>
+
+        <h3>Root-cause weights</h3>
+        <p class="learn-note">From your Yes/No answers to “Is this really the root cause?”. A weight above ×1 ranks the
+          server higher next time it's a suspect; below ×1 ranks it lower.</p>
+        <div class="card-block learn-scroll">
+          <table class="grid" id="learn-weights">
+            <thead><tr><th>Server</th><th>Said right</th><th>Said wrong</th><th>Weight</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+
+        <h3>Segment-age alert lines</h3>
+        <p class="learn-note">Each stream's own normal age of its newest video piece, learned from the last 7 days of
+          checks (per time of day once there's enough history). It warns after 3 high checks in a row. Warnings that
+          settle by themselves make that stream a little less sensitive; a warning followed by an outage makes it more
+          sensitive.</p>
+        <div class="card-block learn-scroll">
+          <table class="grid" id="learn-segments">
+            <thead><tr><th>Stream</th><th>Normal</th><th>Warns above</th><th>Now</th><th>Sensitivity</th><th>Learned from</th>
+              <th>Past warnings</th><th></th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+
+        <h3>Corrections it follows</h3>
+        <p class="learn-note">Answers you marked 👎 with the right answer. A similar question later gets your answer.</p>
+        <div class="card-block learn-scroll">
+          <table class="grid" id="learn-lessons">
+            <thead><tr><th style="width:150px">When</th><th>Question</th><th>Right answer</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+
+        <h3>Past outages it remembers</h3>
+        <p class="learn-note">Every outage that has ended. Add what fixed it, and a similar outage later comes with the
+          fix.</p>
+        <div class="card-block learn-scroll">
+          <table class="grid" id="learn-cases">
+            <thead><tr><th>Started</th><th>Server</th><th>Channels</th><th>Problem</th><th>Where the fault was</th>
+              <th>Likely root cause</th><th>Lasted</th><th>Fix</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+
+        <h3>Voice alerts</h3>
+        <p class="learn-note">Every spoken alert is a real Indian voice saying a line written for that moment, in a
+          mood that rises the longer a problem lasts (calm → urgent → angry → furious, relieved when fixed). Each clip
+          is saved with its text for training a voice model later. Your 👍/👎 and how fast you react pick the voice
+          for each mood, and the lines you like become examples for the next ones.</p>
+        <div class="card-block learn-voice" id="learn-voice"></div>
+
+        <h3>Chatbot exam</h3>
+        <p class="learn-note">Real questions (and every answer you corrected with 👎) asked end to end and graded: did it
+          use the right tool, does the answer say the right things, does it agree with your correction. Run it after
+          changing the model or the tools to see whether things got better or worse. Each run asks the model about
+          40 questions, so it costs tokens.</p>
+        <div class="card-block learn-eval" id="learn-eval"></div>
+
+        <h3>Recent feedback</h3>
+        <div class="card-block learn-scroll">
+          <table class="grid" id="learn-feedback">
+            <thead><tr><th style="width:150px">When</th><th style="width:110px">About</th><th style="width:60px">Vote</th><th>Detail</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- Skills -->
+      <section class="view" id="view-skills">
+        <div class="agent-subnav" style="margin-bottom: 16px;">
+          <div class="agent-subnav-tabs">
+            <button type="button" class="agent-subnav-tab" data-subview="agent">
+              <span class="ico">🤖</span>
+              <span>Agent</span>
+            </button>
+            <button type="button" class="agent-subnav-tab" data-subview="tools">
+              <span class="ico">🛠</span>
+              <span>Tools</span>
+              <span class="subnav-pill">15</span>
+            </button>
+            <button type="button" class="agent-subnav-tab active" data-subview="skills">
+              <span class="ico">🧠</span>
+              <span>Skills</span>
+              <span class="subnav-pill">7</span>
+            </button>
+          </div>
+        </div>
+        <p class="lead">Project Engineering Knowledge, Operational Playbooks &amp; Architecture Manuals. These deep domain skills can be directly browsed, studied, or activated inside the <b>Agent</b>.</p>
+        <div class="skills-grid" id="skills-grid-dynamic">
+          <!-- Populated dynamically from /api/skills -->
+        </div>
+      </section>
+
+      <!-- Notifications: Multi-channel alert dispatch nodes (Email, WhatsApp, SMS) -->
+      <section class="view" id="view-notifications">
+        <div class="notif-hero">
+          <div class="notif-hero-text">
+            <h2>Alert &amp; Incident Notifications</h2>
+            <p class="lead">Configured dispatch nodes across Email, WhatsApp, and SMS for live OTT streaming outages, spider stops, failovers, and latency jitter.</p>
+          </div>
+          <div class="notif-hero-actions">
+            <button class="btn primary" id="btn-notif-add-header">+ Add Notification Node</button>
+            <button class="btn" id="btn-notif-test-all" title="Dispatch test alert to all active nodes">🔔 Broadcast Test Alert</button>
+          </div>
+        </div>
+
+        <!-- Channel tabs and stats bar -->
+        <div class="notif-subnav-bar">
+          <div class="notif-tabs">
+            <button class="notif-tab active" data-channel="all">
+              <span>All Channels</span>
+              <span class="tab-pill" id="notif-summary-total">0 Nodes</span>
+            </button>
+            <button class="notif-tab" data-channel="email">
+              <span class="ico">📧</span><span>Email</span>
+            </button>
+            <button class="notif-tab" data-channel="whatsapp">
+              <span class="ico">💬</span><span>Whatsapp</span>
+            </button>
+            <button class="notif-tab" data-channel="sms">
+              <span class="ico">📱</span><span>SMS</span>
+            </button>
+          </div>
+          <div class="notif-stats-pills">
+            <span class="pill-stat active-stat"><i class="dot" style="background:var(--good)"></i><span id="notif-summary-active">0 Active</span></span>
+            <span class="pill-stat"><i class="dot" style="background:var(--muted)"></i><span>Live Gateway: Online</span></span>
+          </div>
+        </div>
+
+        <!-- Channel containers and node cards rendered dynamically by notifications-view.js -->
+        <div id="notifications-content" class="notifications-content"></div>
+      </section>
+    </main>
+  </div>
+
+  <!-- Context & Retrieval Inspector Modal (Claude-style) -->
+  <div id="context-modal" class="modal-backdrop" hidden>
+    <div class="modal-card ctx-inspector-card" style="max-width: 960px; width: 95vw; max-height: 88vh; display: flex; flex-direction: column;" role="dialog" aria-modal="true" aria-labelledby="context-modal-title">
+      <header>
+        <div style="min-width: 0;">
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+            <span style="font-size:18px">🧠</span>
+            <h3 id="context-modal-title">Context &amp; Retrieval Inspector</h3>
+            <span class="badge" id="ctx-modal-model" style="font-size:10px;padding:2px 8px;border-radius:10px;background:var(--focus);color:#fff">qwen/qwen3.8-27b</span>
+          </div>
+          <div class="sub" id="context-modal-query" style="margin-top:4px;font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:700px"></div>
+        </div>
+        <button class="close" id="context-modal-close" title="Close (Esc)">×</button>
+      </header>
+
+      <!-- Nav Tabs -->
+      <div class="ctx-tabs-bar" style="display:flex;gap:6px;border-bottom:1px solid var(--card-border);padding:10px 0 8px;margin-top:8px;flex-wrap:wrap">
+        <button class="tab-btn active" data-ctx-tab="chunks">📄 Retrieved Chunks (<span id="ctx-tab-count">0</span>)</button>
+        <button class="tab-btn" data-ctx-tab="live">📡 Live Telemetry Snapshot</button>
+        <button class="tab-btn" data-ctx-tab="prompt">📝 Full Prompt &amp; System</button>
+        <button class="tab-btn" data-ctx-tab="tokens">⚡ Token &amp; Performance Audit</button>
+      </div>
+
+      <!-- Tab Content Panels -->
+      <div class="modal-body" style="overflow-y:auto;flex:1;margin-top:12px;display:flex;flex-direction:column;gap:12px;padding-right:4px;">
+        <!-- 1. Retrieved Chunks Panel -->
+        <div id="ctx-panel-chunks" class="ctx-panel">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;gap:10px;">
+            <input type="text" id="ctx-chunk-filter" placeholder="Filter retrieved chunks by title or text…" style="flex:1;font-size:12px;padding:6px 10px;border-radius:6px;border:1px solid var(--card-border);background:var(--canvas);color:var(--text);">
+            <span class="sub" id="ctx-chunk-stats" style="font-size:11px;color:var(--muted);white-space:nowrap"></span>
+          </div>
+          <div id="ctx-chunks-list" style="display:flex;flex-direction:column;gap:10px;"></div>
+        </div>
+
+        <!-- 2. Live Telemetry Snapshot Panel -->
+        <div id="ctx-panel-live" class="ctx-panel" hidden>
+          <div id="ctx-live-stats" class="ctx-stats-grid" style="display:grid;grid-template-columns:repeat(auto-fit, minmax(180px, 1fr));gap:10px;margin-bottom:12px;"></div>
+          <div id="ctx-live-details" style="display:flex;flex-direction:column;gap:10px;"></div>
+        </div>
+
+        <!-- 3. Full Prompt & System Panel -->
+        <div id="ctx-panel-prompt" class="ctx-panel" hidden>
+          <div style="display:flex;flex-direction:column;gap:12px;">
+            <div class="ctx-block">
+              <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
+                <b style="font-size:12px;color:var(--text)">System Instructions</b>
+                <button class="btn small btn-copy-ctx" data-copy-target="ctx-system-text">📋 Copy</button>
+              </div>
+              <pre id="ctx-system-text" style="font-size:11px;line-height:1.5;padding:10px;background:var(--canvas);border:1px solid var(--card-border);border-radius:6px;max-height:180px;overflow:auto;white-space:pre-wrap;color:var(--text);"></pre>
+            </div>
+            <div class="ctx-block">
+              <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
+                <b style="font-size:12px;color:var(--text)">Compiled Prompt (with GraphRAG Context)</b>
+                <button class="btn small btn-copy-ctx" data-copy-target="ctx-prompt-text">📋 Copy</button>
+              </div>
+              <pre id="ctx-prompt-text" style="font-size:11px;line-height:1.5;padding:10px;background:var(--canvas);border:1px solid var(--card-border);border-radius:6px;max-height:280px;overflow:auto;white-space:pre-wrap;color:var(--text);"></pre>
+            </div>
+          </div>
+        </div>
+
+        <!-- 4. Token & Performance Audit Panel -->
+        <div id="ctx-panel-tokens" class="ctx-panel" hidden>
+          <div id="ctx-token-stats" class="ctx-stats-grid" style="display:grid;grid-template-columns:repeat(auto-fit, minmax(160px, 1fr));gap:10px;margin-bottom:12px;"></div>
+          <div class="ctx-window-meter" style="background:var(--canvas);border:1px solid var(--card-border);border-radius:8px;padding:12px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+              <span style="font-size:12px;font-weight:600">Context Window Utilization</span>
+              <span id="ctx-window-percent" style="font-size:12px;color:var(--muted)">0%</span>
+            </div>
+            <div style="height:8px;border-radius:4px;background:var(--card-border);overflow:hidden;">
+              <div id="ctx-window-bar" style="height:100%;width:0%;background:linear-gradient(90deg, var(--focus), var(--accent));transition:width .3s ease"></div>
+            </div>
+            <div style="display:flex;justify-content:space-between;margin-top:6px;font-size:11px;color:var(--muted)">
+              <span id="ctx-window-tokens">0 / 32,768 tokens</span>
+              <span id="ctx-window-limit">Provider: OpenRouter</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Excel Import Preview Modal -->
+  <!-- Server history charts (node-history.js) -->
+  <div id="history-modal" class="modal-backdrop" hidden>
+    <div class="modal-card hist-card" role="dialog" aria-modal="true" aria-labelledby="history-title">
+      <header>
+        <div>
+          <h3 id="history-title">History</h3>
+          <div class="sub" id="history-summary"></div>
+        </div>
+        <div class="hist-head-right">
+          <div class="hist-ranges" id="history-ranges" role="group" aria-label="Time range"></div>
+          <div class="hist-export-group">
+            <button type="button" class="hist-btn-dl" id="hist-btn-download" title="Download Report for selected time range">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="margin-right:3px"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+              <span id="hist-dl-text">Download Report</span>
+            </button>
+            <button type="button" class="hist-btn-csv" id="hist-btn-csv" title="Export CSV for selected time range">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="margin-right:3px"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+              <span id="hist-csv-text">CSV</span>
+            </button>
+          </div>
+          <button class="close" id="history-close" title="Close (Esc)">×</button>
+        </div>
+      </header>
+      <section class="hist-ai" id="hist-ai" aria-live="polite">
+        <div class="hist-ai-head">
+          <b>✨ AI summary</b><span class="sub">what happened, when it was worst, the likely cause and what to do</span>
+          <span class="hist-ai-actions">
+            <button type="button" class="btn small primary" id="hist-ai-run">Explain with AI</button>
+            <button type="button" class="btn small" id="hist-ai-ask" title="Continue in the Agent chat with this server and period">Ask the agent</button>
+          </span>
+        </div>
+        <div class="hist-ai-body" id="hist-ai-body" hidden></div>
+      </section>
+      <section class="hist-block"><h4>Availability <span class="sub">checks passed per bar, with outages ▲, recoveries ●, blips ×, glitches ◆ and ad breaks ■</span></h4>
+        <div class="hist-chart"><canvas id="hist-availability"></canvas></div></section>
+      <section class="hist-block"><h4>Response time</h4>
+        <div class="hist-chart"><canvas id="hist-response"></canvas></div></section>
+      <section class="hist-block"><h4>Segment age <span class="sub">how old the newest video piece was, against each stream's learned lines</span></h4>
+        <div class="hist-chart"><canvas id="hist-segment"></canvas></div></section>
+      <section class="hist-block"><h4>Failures and packet loss</h4>
+        <div class="hist-chart"><canvas id="hist-failures"></canvas></div></section>
+    </div>
+  </div>
+
+  <div id="excel-modal" class="modal-backdrop" hidden>
+    <div class="modal-card" style="max-width: 680px;" role="dialog" aria-modal="true"
+      aria-labelledby="excel-modal-title">
+      <header>
+        <div>
+          <h3 id="excel-modal-title">⬆ Import Excel Workbook</h3>
+          <div class="sub" id="excel-modal-filename" style="margin-top:2px;font-size:11px;color:var(--muted)"></div>
+        </div>
+        <button class="close" id="excel-modal-close" title="Close (Esc)">×</button>
+      </header>
+      <div class="modal-body" style="margin: 14px 0 10px; display: flex; flex-direction: column; gap: 12px;">
+        <div id="excel-preview-stats"></div>
+        <label
+          style="display: flex; align-items: center; gap: 8px; font-size: 12px; cursor: pointer; user-select: none;">
+          <input type="checkbox" id="excel-auto-connect" checked>
+          <span>Auto-connect standard media pipeline relationships (Main/Backup → Transcoding → FinalLink)</span>
+        </label>
+        <div id="excel-preview-details" style="max-height: 240px; overflow-y: auto;"></div>
+      </div>
+      <footer style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px;">
+        <button class="btn" id="excel-btn-cancel">Cancel</button>
+        <button class="btn" id="excel-btn-table" title="Populate rows in the Links view table">Load into Links
+          Table</button>
+        <button class="btn primary" id="excel-btn-save" title="Directly upsert nodes and topology in Neo4j">Save to
+          Database</button>
+      </footer>
+    </div>
+  </div>
+
+  <!-- Uptime Matrix Fullscreen Modal -->
+  <div id="heatmap-modal" class="modal-backdrop" hidden>
+    <div class="modal-card" style="max-width: 1040px; width: 95vw;" role="dialog" aria-modal="true"
+      aria-labelledby="heatmap-modal-title">
+      <header>
+        <div>
+          <h3 id="heatmap-modal-title">📊 Live Uptime & Incident Matrix</h3>
+          <div class="sub" style="margin-top:2px;font-size:11px;color:var(--muted)">Timeline of recent pings, outages,
+            and response latencies across infrastructure</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px">
+          <input type="text" id="matrix-search" placeholder="Filter channels or nodes…"
+            style="font-size:11px;padding:4px 8px;border-radius:6px;border:1px solid var(--card-border);background:var(--canvas);color:var(--text);width:180px;">
+          <div class="matrix-tabs">
+            <button class="tab-btn active" id="modal-tab-all">All</button>
+            <button class="tab-btn" id="modal-tab-channels">Channels</button>
+            <button class="tab-btn" id="modal-tab-transcode">Transcode</button>
+            <button class="tab-btn" id="modal-tab-ingest">Ingest</button>
+            <button class="tab-btn" id="modal-tab-final">Final</button>
+            <button class="tab-btn" id="modal-tab-nodes">Infra</button>
+          </div>
+          <button class="close" id="heatmap-modal-close" title="Close (Esc)">×</button>
+        </div>
+      </header>
+      <div class="modal-body" style="margin: 12px 0 0;">
+        <div class="matrix-legend" style="margin-bottom:8px">
+          <div class="legend-items">
+            <span class="legend-item"><i class="dot ok"></i>Healthy (&lt;150ms)</span>
+            <span class="legend-item"><i class="dot mid"></i>Moderate (150-300ms)</span>
+            <span class="legend-item"><i class="dot slow"></i>High Latency (&gt;300ms)</span>
+            <span class="legend-item"><i class="dot fail"></i>Outage</span>
+            <span class="legend-item"><i class="dot blip"></i>Transient Blip</span>
+            <span class="legend-item"><i class="dot empty"></i>Pending</span>
+          </div>
+          <span class="sub" style="font-size:11px;color:var(--muted)">Hover over any block for exact timestamp & error
+            details</span>
+        </div>
+        <div class="matrix-grid-wrap modal-matrix-grid" id="modal-matrix-grid"
+          style="max-height: 60vh; overflow-y: auto;">
+          <!-- Dynamically populated rows in modal -->
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="matrix-tooltip" class="matrix-tooltip" hidden></div>
+
+  <!-- HLS preview player -->
+  <div id="player-modal" hidden>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="player-title">
+      <header>
+        <div>
+          <h3 id="player-title">Video preview</h3>
+          <div class="sub" id="player-sub"></div>
+        </div>
+        <button class="close" title="Close (Esc)">×</button>
+      </header>
+      <div class="channel-tabs" id="player-tabs"></div>
+      <div class="video-wrap">
+        <video id="player-video" controls muted autoplay playsinline></video>
+        <div id="player-overlay" hidden></div>
+      </div>
+      <footer>
+        <div id="player-stats" class="player-stats"></div>
+        <label class="quality">Quality <select id="player-quality">
+            <option value="-1">Auto</option>
+          </select></label>
+        <a id="player-open" class="btn" target="_blank" rel="noopener">Open stream URL ↗</a>
+      </footer>
+    </div>
+  </div>
+
+  <!-- Notification Node Modal -->
+  <div id="notif-modal" class="notif-modal-backdrop" hidden>
+    <div class="notif-modal-card" role="dialog" aria-modal="true" aria-labelledby="notif-modal-title">
+      <header class="notif-modal-header">
+        <h3 id="notif-modal-title">Add Notification Destination</h3>
+        <button class="close notif-modal-close" title="Close">×</button>
+      </header>
+      <form id="notif-modal-form" class="notif-modal-form">
+        <div class="form-row">
+          <label for="notif-modal-channel">Channel</label>
+          <select id="notif-modal-channel" required>
+            <option value="email">📧 Email</option>
+            <option value="whatsapp">💬 WhatsApp</option>
+            <option value="sms">📱 SMS</option>
+          </select>
+        </div>
+        <div class="form-row">
+          <label for="notif-modal-target">Destination</label>
+          <input type="text" id="notif-modal-target" placeholder="e.g. alerts@company.com" required>
+        </div>
+        <div class="form-row">
+          <label for="notif-modal-label">Label / Name (Optional)</label>
+          <input type="text" id="notif-modal-label" placeholder="e.g. Primary On-Call">
+        </div>
+        <footer class="notif-modal-footer">
+          <button type="button" class="btn notif-modal-close">Cancel</button>
+          <button type="submit" class="btn primary">Add Destination</button>
+        </footer>
+      </form>
+  <div id="toasts"></div>
+  <script src="/static/hls.min.js"></script>  <!-- hls.js 1.5.20, served locally (works without internet) -->
+  <!-- The page's scripts, in order (classic scripts sharing one scope; boot.js starts everything). -->
+  <script src="/static/chart.umd.min.js"></script>  <!-- Chart.js 4.4.1, served locally -->
+  <script src="/static/core.js"></script>
+  <script src="/static/sys-usage.js"></script>
+  <script src="/static/canvas.js"></script>
+  <script src="/static/node-detail.js"></script>
+  <script src="/static/node-history.js"></script>
+  <script src="/static/uptime-matrix.js"></script>
+  <script src="/static/player.js"></script>
+  <script src="/static/runs.js"></script>
+  <script src="/static/node-alerts.js"></script>
+  <script src="/static/tts-alerts.js"></script>
+  <script src="/static/views.js"></script>
+  <script src="/static/chat.js"></script>
+  <script src="/static/agent-briefing.js"></script>
+  <script src="/static/learning-view.js"></script>
+  <script src="/static/servers-view.js"></script>
+  <script src="/static/notifications-view.js"></script>
+  <script src="/static/boot.js"></script>
+</body>
+
+</html>

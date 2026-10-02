@@ -1,0 +1,18 @@
+# Keep secrets, local environments and dev-only files out of the image.
+.env
+.env.*
+.venv
+__pycache__
+*.pyc
+.pytest_cache
+tests
+*.ipynb
+notebooks
+scheduler.json
+embeddings_cron.json
+.vscode
+.DS_Store
+backups
+state
+*.zip
+metrics.db*
