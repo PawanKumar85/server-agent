@@ -32,6 +32,8 @@ IST = timezone(timedelta(hours=5, minutes=30))
 CASE_SYNC_S = 60  # rebuild cases from the incident log at most this often
 PATTERN_CACHE_S = 300
 TOGETHER_S = 180  # outages starting this close together count as failing together
+TOGETHER_LIFT = 2.0  # ...but only when that happens at least this many times more often than chance
+FIRST_SHARE = 0.7  # "X usually goes first" only when X really is first at least this often
 MIN_PATTERN = 2  # occurrences before something counts as a pattern
 SIMILAR_MIN = 0.45  # cosine (plus bonuses) from which a past case counts as similar
 LESSON_MIN = 0.6  # cosine between questions from which a past correction applies
@@ -91,6 +93,8 @@ def when_words(iso: Optional[str]) -> str:
 
 
 class Learner:
+    upstream_of: Optional[Callable[[], Dict[str, Iterable[str]]]] = None  # node -> its upstream nodes (pipeline)
+
     def __init__(self, path: str, embed: Optional[Callable[[List[str]], "np.ndarray"]] = None):
         self.path = str(path)
         Path(self.path).parent.mkdir(parents=True, exist_ok=True)
@@ -374,6 +378,13 @@ class Learner:
 
     # --- patterns ---
 
+    def _upstream(self) -> Dict[str, set]:
+        """node -> every node upstream of it in the pipeline (set by the server from the graph; empty in tests)."""
+        try:
+            return {k: set(v) for k, v in (self.upstream_of() if self.upstream_of else {}).items()}
+        except Exception:
+            return {}
+
     def patterns(self) -> List[dict]:
         """Recurring things in the closed outages, strongest first: {"kind", "nodes", "count", "text"}."""
         self.sync_cases()
@@ -417,6 +428,10 @@ class Learner:
                                   "text": f"{short(node)} fails about every {duration_words(statistics.median(gaps))}."})
 
         # Nodes failing together: outages on different nodes that start within TOGETHER_S, and which came first.
+        # A server that fails every few minutes lands near any other outage by pure chance, so a pair only counts
+        # when it happens TOGETHER_LIFT times more often than chance (expected = n_a * n_b * 2 * TOGETHER_S / span).
+        # Who leads: the pipeline (an input before what it feeds) when the two are connected; otherwise the timing,
+        # and only when it is consistent.
         pairs: Counter = Counter()
         first: Counter = Counter()
         lag: Dict[tuple, List[float]] = {}
@@ -430,15 +445,36 @@ class Learner:
                     pairs[key] += 1
                     first[(a, b)] += 1
                     lag.setdefault(key, []).append(tb - ta)
+        span = max(86400.0, stamped[-1][0] - stamped[0][0]) if stamped else 86400.0
+        counts = Counter(node for _, node in stamped)
+        upstream = self._upstream()
         for (a, b), n in pairs.items():
             if n < MIN_PATTERN:
                 continue
-            lead, follow = (a, b) if first[(a, b)] >= first[(b, a)] else (b, a)
-            text = f"{short(a)} and {short(b)} have failed together {n} times"
-            if first[(lead, follow)] > n / 2:
-                text += f"; {short(lead)} usually goes first and {short(follow)} follows within " \
-                        f"{duration_words(statistics.median(lag[(a, b)]) or 1)}"
-            found.append({"kind": "together", "nodes": [lead, follow], "count": n, "text": text + "."})
+            expected = counts[a] * counts[b] * 2 * TOGETHER_S / span
+            lift = n / expected if expected else float("inf")
+            if lift < TOGETHER_LIFT:
+                continue  # no more often than two frequent failers would meet by chance
+            a_feeds_b, b_feeds_a = a in upstream.get(b, ()), b in upstream.get(a, ())
+            by_time = (a, b) if first[(a, b)] >= first[(b, a)] else (b, a)
+            share = first[by_time] / n
+            lift_words = f"{lift:.0f}x more often than chance" if lift < 100 else "far more often than chance"
+            text = f"{short(a)} and {short(b)} have failed together {n} times ({lift_words})"
+            if a_feeds_b or b_feeds_a:
+                lead, follow = (a, b) if a_feeds_b else (b, a)
+                text += f"; {short(lead)} feeds {short(follow)}, so {short(lead)} is the likely cause"
+                if by_time == (lead, follow) and share >= FIRST_SHARE:
+                    text += f" (it fails first, {short(follow)} follows within " \
+                            f"{duration_words(statistics.median(lag[(a, b)]) or 1)})"
+            else:
+                lead, follow = by_time
+                if share >= FIRST_SHARE:
+                    text += f"; {short(lead)} usually goes first and {short(follow)} follows within " \
+                            f"{duration_words(statistics.median(lag[(a, b)]) or 1)}"
+                else:
+                    text += "; neither one consistently fails first"
+            found.append({"kind": "together", "nodes": [lead, follow], "count": n, "lift": round(lift, 1),
+                          "text": text + "."})
         # Category MTTR (Mean Time to Recovery) patterns
         try:
             from metrics import store as metrics_store

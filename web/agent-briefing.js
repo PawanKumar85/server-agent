@@ -72,7 +72,7 @@ function agentBriefing(chs, warnings) {
     if (backup.length) parts.push(isHi ? `${agentList(backup)} backup link par chal ${backup.length === 1 ? "raha hai" : "rahe hain"}.` : `${agentList(backup)} ${backup.length === 1 ? "is" : "are"} running on backup.`);
   }
   const top = (agentView.ranking[0] || {}).ranking?.[0];
-  if (top) parts.push(isHi ? `Sabse zyada sambhavit root cause ${agentShort(top.node)} hai.` : `The likely root cause is ${agentShort(top.node)}.`);
+  if (top) parts.push(isHi ? `Problem sabse pehle ${agentShort(top.node)} server me start hui (Origin / Root cause).` : `The outage started on server ${agentShort(top.node)} (Problem Origin).`);
   if (warnings.length && !off.length && !backup.length) {  // during an outage the briefing sticks to it
     const w = warnings[0];
     parts.push(isHi ? `${agentShort(w.node)} par alert: ${typeof trHinglish === "function" ? trHinglish(w.phrase) : w.phrase}.` : `${agentShort(w.node)}'s ${w.phrase}.`);
@@ -86,7 +86,7 @@ function agentPrompts(chs, warnings) {
     prompts.push({q: `Why is ${c.name} off air?`, reason: "Off air", tone: "off"});
   }
   const top = (agentView.ranking[0] || {}).ranking?.[0];
-  if (top) prompts.push({q: `Why is ${agentShort(top.node)} the likely root cause?`, reason: "Root cause", tone: "off"});
+  if (top) prompts.push({q: `Kis server me problem start hui (${agentShort(top.node)})?`, reason: "Origin Server", tone: "off"});
   for (const c of chs.filter(c => c.state === "backup").slice(0, 1)) {
     prompts.push({q: `Why is ${c.name} running on its backup?`, reason: "On backup", tone: "backup"});
   }

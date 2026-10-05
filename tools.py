@@ -110,6 +110,15 @@ TOOL_GROUPS = [
      {"remember_fact", "forget_fact", "record_root_cause_feedback", "record_incident_fix"}),
     (re.compile(r"\b(scrap\w*|crawl\w*|website|web ?page|extract)\b|https?://", re.I), {"scrapy"}),
     (re.compile(r"\b(excel|xlsx|spreadsheet|workbook|export|download)\b", re.I), {"generate_excel"}),
+    # Notifications: only when the question is about sending or notifying (they are ~1,000 tokens of schemas).
+    (re.compile(r"\b(send|notify|notification|message|msg|email|e-mail|mail|sms|text|whatsapp|slack|telegram|"
+                r"webhook|pagerduty|page|on-?call|bhejo|bhej|inform)\b", re.I),
+     {"mcp_send_whatsapp", "mcp_send_sms", "mcp_send_email", "mcp_send_slack", "mcp_send_telegram",
+      "mcp_send_webhook", "mcp_trigger_pagerduty"}),
+    (re.compile(r"\b(cdn|geo\w*|locations?|city|cities|distance|placement|pop|region|where)\b", re.I),
+     {"recommend_cdn_placement", "get_server_geo_matrix"}),
+    (re.compile(r"\b(summar\w*|postmortem|post-mortem|incident report|what happened|recap)\b", re.I),
+     {"summarize_incident"}),
 ]
 
 

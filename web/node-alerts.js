@@ -41,8 +41,50 @@ function urlProblem(h) {
   return {title, text};
 }
 
-// The alert for a card: the whole server, or (url) one channel's Final card. null when there's nothing to say.
+// --- Per-channel "ignore alerts" (channel_mute.py): checks continue, but the channel raises no toast or voice ---
+const mutedChannels = new Map();  // channel -> {since, note}
+
+function cardChannels(nodeId, url) {
+  const n = byId[nodeId];
+  if (!n) return [];
+  const links = (n.links || []).filter(l => !url || l.url === url);
+  return [...new Set(links.map(l => l.channel).filter(Boolean))];
+}
+
+// A card is muted when every channel it carries is muted (a shared server still alerts for its live channels).
+function isCardMuted(nodeId, url) {
+  const chs = cardChannels(nodeId, url);
+  return chs.length > 0 && chs.every(c => mutedChannels.has(c));
+}
+
+async function loadChannelMutes() {
+  try {
+    const res = await fetch("/api/channels/mutes");
+    if (!res.ok) return;
+    const data = await res.json();
+    mutedChannels.clear();
+    Object.entries(data.muted || {}).forEach(([c, v]) => mutedChannels.set(c, v));
+    if (typeof renderNodeAlerts === "function" && typeof world !== "undefined") renderNodeAlerts();
+  } catch (_) { /* the switch is optional: alerts behave normally without it */ }
+}
+
+async function setChannelMute(channel, muted, note = null) {
+  const res = await fetch(`/api/channels/${encodeURIComponent(channel)}/mute`, {
+    method: "PUT", headers: {"Content-Type": "application/json"}, body: JSON.stringify({muted, note})});
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  await loadChannelMutes();
+}
+loadChannelMutes();
+setInterval(loadChannelMutes, 30000);  // another operator may change it
+
+// The alert for a card: the whole server, or (url) one channel's Final card. null when there's nothing to say,
+// or when the operator chose to ignore this channel's alerts.
 function cardAlert(nodeId, url) {
+  if (isCardMuted(nodeId, url)) return null;
+  return cardAlertRaw(nodeId, url);
+}
+
+function cardAlertRaw(nodeId, url) {
   const n = byId[nodeId];
   if (!n) return null;
   const health = n.urlHealth || {};
@@ -56,7 +98,18 @@ function cardAlert(nodeId, url) {
   if (stoppedSpider) {
     const rootHost = stoppedSpider.at ? alertShort(stoppedSpider.at) : "upstream host";
     const is404 = String(stoppedSpider.stopReason || "").includes("404");
-    const title = is404 ? "Ingest stream missing (HTTP 404)" : "Upstream feed failed";
+    if (stoppedSpider.at && stoppedSpider.at !== nodeId) {
+      return {
+        tone: "affected",
+        title: "Cascading failure",
+        text: `Downstream victim. Ingest stream stopped upstream at ${rootHost}: ${stoppedSpider.stopReason || "Feed stopped"}.`,
+        pill: `⚠️ Affected by ${rootHost}`,
+        tag: "Cascading Victim",
+        key: `stopped-spider-${nodeId}`,
+        since: stoppedSpider.lastStepAt || ""
+      };
+    }
+    const title = is404 ? "🚨 Ingest stream missing (HTTP 404)" : "🚨 Upstream feed failed";
     const text = is404
       ? `Origin ${rootHost} missing manifest. MCR team: restart live encoder push.`
       : (stoppedSpider.stopReason || `Stopped at ${rootHost}.`);
@@ -64,7 +117,7 @@ function cardAlert(nodeId, url) {
       tone: "down",
       title,
       text,
-      tag: "Upstream fail",
+      tag: "🚨 Problem Origin",
       key: `stopped-spider-${nodeId}`,
       since: stoppedSpider.lastStepAt || ""
     };
@@ -72,15 +125,70 @@ function cardAlert(nodeId, url) {
 
   if (failing.length || (!url && n.status === "DOWN")) {
     const since = failing.map(h => h.onsetAt).filter(Boolean).sort()[0];
-    if (top && top.node !== nodeId) {
-      return {tone: "affected", title: "Affected", key: `${top.node}`, pill: `Affected by ${alertShort(top.node)}`,
-              text: `Fails because ${alertShort(top.node)} upstream is down.`, since};
+    const onsetMs = since ? Date.parse(since.replace(/(\.\d{3})\d+/, "$1")) : 0;
+    const failingAgeS = onsetMs ? Math.max(0, Math.round((Date.now() - onsetMs) / 1000)) : 0;
+    const labels = n.labels || [];
+    const isBackupOnly = labels.includes("BackupLink") && !labels.includes("MainInput");
+    const hasDownstreamImpact = group && (group.nodes || []).length > 1;
+
+    // Angle 1: If BackupLink and NO downstream victims -> Standby backup link idle, not an outage!
+    if (isBackupOnly && !hasDownstreamImpact) {
+      return {
+        tone: "warn",
+        title: "Backup link standby",
+        text: `Backup input has no active segments. MainInput is serving broadcast without outage.`,
+        pill: "Backup standby",
+        key: `backup-idle-${nodeId}`,
+        since
+      };
     }
+
+    if (top && top.node !== nodeId) {
+      return {tone: "affected", title: "Cascading failure", key: `${top.node}`, pill: `⚠️ Affected by ${alertShort(top.node)}`,
+              text: `Downstream victim: problem started upstream on ${alertShort(top.node)}${top.onsetAt ? ` (${alertSince(top.onsetAt)})` : ""}.`, since};
+    }
+
     const p = failing.length ? urlProblem(failing[0]) : {title: "Down", text: n.lastError || ""};
     const extra = failing.length > 1 ? ` ${failing.length} streams failing.` : "";
-    return {tone: "down", title: p.title, text: p.text + (p.text && !p.text.endsWith(".") ? "." : "") + extra,
-            tag: top && top.node === nodeId && group.nodes.length > 1 ? "Root cause" : "",
-            trace: nodeAlerts.traces[nodeId], since, key: failing.map(h => h.category).join(",")};
+
+    // Angle 2: Temporal confirmation - monitor for at least 1 minute (60s) before alerting as Outage/Origin
+    if (failingAgeS < 60) {
+      const stability = (typeof analyzeNodeStability === "function") ? analyzeNodeStability(n) : null;
+      const isFlap = stability && stability.isFlapping;
+      return {
+        tone: "warn",
+        title: isFlap ? "Intermittent stream stall (flapping)" : "Monitoring health check",
+        text: isFlap
+          ? `Stream stall #${stability.dropCount} (${failingAgeS}s / 60s). Frequent 8s-35s stalls due to video packet jitter. Broadcast safe.`
+          : `Observed stream blip (${failingAgeS}s / 60s confirmation window). Monitoring across all angles before raising alarm.`,
+        pill: isFlap ? `🔄 Flapping (${60 - failingAgeS}s)` : `⏳ Monitoring (${60 - failingAgeS}s)`,
+        key: `monitoring-${nodeId}`,
+        since
+      };
+    }
+
+    const isOrigin = top && top.node === nodeId && (hasDownstreamImpact || !isBackupOnly);
+    const originTag = isOrigin ? "🚨 Confirmed Origin" : "";
+    return {
+      tone: "down",
+      title: isOrigin ? "🚨 Confirmed Outage Origin" : p.title,
+      text: (isOrigin ? `Confirmed after 1 min+ monitoring (${alertSince(since)}): problem started here first. ` : "") + p.text + (p.text && !p.text.endsWith(".") ? "." : "") + extra,
+      tag: originTag,
+      trace: nodeAlerts.traces[nodeId],
+      since,
+      key: failing.map(h => h.category).join(",")
+    };
+  }
+  const stability = (typeof analyzeNodeStability === "function") ? analyzeNodeStability(n) : null;
+  if (stability && stability.isFlapping) {
+    return {
+      tone: "flapping",
+      title: "Intermittent stream stalls (flapping)",
+      key: `flapping-${nodeId}`,
+      pill: `🔄 Flapping (${stability.dropCount} drops)`,
+      text: `Server is currently UP, but has ${stability.dropCount} transient stalls (~${stability.avgDuration || 18}s). Click for root cause & permanent fix guide.`,
+      since: stability.lastOutageAt || ""
+    };
   }
   const rec = nodeAlerts.recovered[nodeId];
   if (rec && rec.until > Date.now()) {
@@ -112,13 +220,145 @@ function cardAlert(nodeId, url) {
   return null;
 }
 
+// Multi-Angle Confirmation Engine:
+// 1. Minimum 1-minute (60 seconds) sustained observation window.
+// 2. Redundancy role check: BackupLink without downstream victims is normal standby, NOT an outage.
+// 3. Downstream impact / spider check: must affect downstream delivery or be confirmed primary ingest.
+function getConfirmedOrigins() {
+  const origins = [];
+  const seenNodes = new Set();
+  const now = Date.now();
+
+  for (const g of (nodeAlerts.groups || [])) {
+    const ranking = g.ranking || [];
+    if (!ranking.length) continue;
+    const top = ranking[0];
+    const n = byId[top.node];
+    const isDown = (n && n.status === "DOWN") || Object.values((n && n.urlHealth) || {}).some(h => h.up === false);
+    if (!isDown && (top.score || 0) < 0.3) continue;
+
+    const labels = (n && n.labels) || [];
+    const isBackupOnly = labels.includes("BackupLink") && !labels.includes("MainInput");
+    const victims = ranking.slice(1).map(r => r.node).filter(vid => {
+      const vn = byId[vid];
+      return vn && (vn.status === "DOWN" || Object.values(vn.urlHealth || {}).some(h => h.up === false));
+    });
+
+    // Angle 1: BackupLink without downstream victims is normal standby, never an outage origin
+    if (isBackupOnly && victims.length === 0) continue;
+
+    // Angle 2: Temporal 1-minute observation window
+    const onsetMs = top.onsetAt ? Date.parse(top.onsetAt.replace(/(\.\d{3})\d+/, "$1")) : 0;
+    const ageS = onsetMs ? Math.max(0, Math.round((now - onsetMs) / 1000)) : 0;
+    if (ageS < 60) continue; // Sustained for >= 1 minute
+
+    if (!seenNodes.has(top.node)) {
+      seenNodes.add(top.node);
+      origins.push({
+        node: top.node,
+        role: (n && labels.find(l => ROLES.includes(l))) || (labels && labels[0]) || "MainInput",
+        score: top.score,
+        onsetAt: top.onsetAt,
+        durationS: ageS,
+        reasons: top.reasons || [],
+        victims: victims,
+        groupNodes: g.nodes || []
+      });
+    }
+  }
+
+  for (const s of (G.spiders || [])) {
+    if (s.status === "STOPPED" && s.at && !seenNodes.has(s.at)) {
+      const n = byId[s.at];
+      const labels = (n && n.labels) || [];
+      const isBackupOnly = labels.includes("BackupLink") && !labels.includes("MainInput");
+
+      // Verify duration: spider stop must be monitored for at least 60s
+      const stopMs = s.lastStepAt ? Date.parse(s.lastStepAt.replace(/(\.\d{3})\d+/, "$1")) : 0;
+      const ageS = stopMs ? Math.max(0, Math.round((now - stopMs) / 1000)) : 0;
+      if (ageS < 60) continue;
+
+      const victims = [s.finalLinkId].filter(f => f && f !== s.at);
+      if (isBackupOnly && victims.length === 0) continue;
+
+      seenNodes.add(s.at);
+      origins.push({
+        node: s.at,
+        role: (n && labels.find(l => ROLES.includes(l))) || "MainInput",
+        score: 1.0,
+        onsetAt: s.lastStepAt,
+        durationS: ageS,
+        reasons: [s.stopReason || "Spider stopped at this upstream dependency"],
+        victims: victims,
+        groupNodes: [s.at, s.finalLinkId].filter(Boolean)
+      });
+    }
+  }
+
+  // Fallback: ONLY primary nodes (MainInput / FinalLink) that have been DOWN for >= 60s
+  // Standby BackupLinks are strictly excluded
+  if (!origins.length) {
+    for (const n of (G.nodes || [])) {
+      if (seenNodes.has(n.id)) continue;
+      const labels = n.labels || [];
+      const isBackupOnly = labels.includes("BackupLink") && !labels.includes("MainInput");
+      if (isBackupOnly) continue;
+
+      const failingUrls = Object.values(n.urlHealth || {}).filter(h => h.up === false);
+      if (n.status === "DOWN" || failingUrls.length) {
+        const earliestOnset = failingUrls.map(h => h.onsetAt).filter(Boolean).sort()[0];
+        const onsetMs = earliestOnset ? Date.parse(earliestOnset.replace(/(\.\d{3})\d+/, "$1")) : 0;
+        const ageS = onsetMs ? Math.max(0, Math.round((now - onsetMs) / 1000)) : 0;
+
+        if (ageS < 60) continue;
+
+        seenNodes.add(n.id);
+        origins.push({
+          node: n.id,
+          role: labels.find(l => ROLES.includes(l)) || "Server",
+          score: 1.0,
+          onsetAt: earliestOnset || null,
+          durationS: ageS,
+          reasons: [failingUrls[0] ? (failingUrls[0].detail || failingUrls[0].category || "Stream failure") : (n.lastError || "Node DOWN")],
+          victims: [],
+          groupNodes: [n.id]
+        });
+      }
+    }
+  }
+
+  return origins;
+}
+window.getConfirmedOrigins = getConfirmedOrigins;
+
 function renderNodeAlerts() {
+  const confirmedOrigins = getConfirmedOrigins();
+  const allOrigins = new Set(confirmedOrigins.map(o => o.node));
+
+  const allVictims = new Set();
+  (nodeAlerts.groups || []).forEach(g => {
+    (g.ranking || []).slice(1).forEach(r => allVictims.add(r.node));
+  });
+
   $$(".node[data-node]", world).forEach(card => {
-    card.querySelector(".node-alert, .node-alert-pill")?.remove();
+    const id = card.dataset.node;
+    card.classList.toggle("origin-root", allOrigins.has(id));
+    card.classList.toggle("cascading-victim", allVictims.has(id) && !allOrigins.has(id));
+
+    card.querySelector(".node-alert, .node-alert-pill, .node-muted-tag")?.remove();
     card.classList.remove("has-alert");
-    const a = cardAlert(card.dataset.node, card.dataset.url || null);
+    const muted = isCardMuted(id, card.dataset.url || null);
+    card.classList.toggle("channel-muted", muted);
+    if (muted) {  // never silently: the card says its alerts are being ignored
+      const tag = document.createElement("div");
+      tag.className = "node-muted-tag";
+      tag.textContent = "🔕 Alerts ignored";
+      tag.title = "This channel is still checked, but raises no alerts. Open the panel to turn alerts back on.";
+      card.appendChild(tag);
+    }
+    const a = cardAlert(id, card.dataset.url || null);
     if (!a) return;
-    const key = `${card.dataset.node}|${card.dataset.url || ""}|${a.tone}|${a.title}|${a.key || ""}|${a.since || ""}`;
+    const key = `${id}|${card.dataset.url || ""}|${a.tone}|${a.title}|${a.key || ""}|${a.since || ""}`;
     if (nodeAlerts.dismissed.has(key)) return;
     const el = document.createElement("div");
     el.setAttribute("role", a.tone === "down" ? "alert" : "status");
@@ -129,33 +369,97 @@ function renderNodeAlerts() {
       el.title = `${a.title}: ${a.text}${a.since ? ` (${alertSince(a.since)})` : ""}. Click for details.`;
       el.textContent = a.pill;
       el.addEventListener("mousedown", e => e.stopPropagation());
-      el.addEventListener("click", e => { e.stopPropagation(); showDetail(card.dataset.node); });
+      el.addEventListener("click", e => { e.stopPropagation(); showDetail(id); });
       card.appendChild(el);
       return;
     }
-    el.className = `node-alert node-alert-${a.tone}`;
+    el.className = `node-alert node-alert-${a.tone}${a.tag?.includes("Origin") ? " alert-origin-pulse" : ""}`;
     el.innerHTML = `
       <div class="node-alert-head">
         <b>${esc(a.title)}</b>
         ${a.since ? `<span class="node-alert-since">${esc(alertSince(a.since))}</span>` : ""}
         <button type="button" class="node-alert-x" aria-label="Dismiss" title="Dismiss">×</button>
       </div>
-      ${a.text || a.tag ? `<div class="node-alert-text">${a.tag ? `<span class="node-alert-tag">${esc(a.tag)}</span> ` : ""}${esc(a.text || "")}</div>` : ""}
+      ${a.text || a.tag ? `<div class="node-alert-text">${a.tag ? `<span class="node-alert-tag ${a.tag.includes("Origin") ? "tag-origin" : ""}">${esc(a.tag)}</span> ` : ""}${esc(a.text || "")}</div>` : ""}
       ${a.trace ? `<div class="node-alert-trace">Network: ${esc(a.trace)}</div>` : ""}`;
     el.querySelector(".node-alert-x").addEventListener("click", e => {
       e.stopPropagation();
       nodeAlerts.dismissed.add(key);
       el.remove(); card.classList.remove("has-alert");
     });
-    el.addEventListener("mousedown", e => e.stopPropagation());  // clicking the note doesn't start a drag
-    el.addEventListener("click", e => { e.stopPropagation(); showDetail(card.dataset.node); });
+    el.addEventListener("mousedown", e => e.stopPropagation());
+    el.addEventListener("click", e => { e.stopPropagation(); showDetail(id); });
     card.classList.add("has-alert");
     card.appendChild(el);
   });
 
+  renderOriginBanner();
+
   if (window.ttsAlerts && typeof window.ttsAlerts.onAlertsRendered === "function") {
     window.ttsAlerts.onAlertsRendered();
   }
+}
+
+function renderOriginBanner() {
+  const banner = $("#rca-origin-banner");
+  if (!banner) return;
+
+  const origins = getConfirmedOrigins();
+
+  if (!origins.length) {
+    banner.hidden = true;
+    banner.innerHTML = "";
+    return;
+  }
+
+  banner.hidden = false;
+  banner.innerHTML = origins.map(orig => {
+    const roleClass = `role-${orig.role}`;
+    const timeAgo = orig.onsetAt ? alertSince(orig.onsetAt) : `${Math.round(orig.durationS / 60)} min`;
+    const reasonText = (orig.reasons && orig.reasons.length) ? orig.reasons.join(" · ") : "Service interruption";
+    const victimSummary = orig.victims.length
+      ? `${orig.victims.length} downstream server${orig.victims.length > 1 ? "s" : ""} failing: ${orig.victims.map(alertShort).join(", ")}`
+      : "Primary broadcast stream disrupted";
+
+    return `
+      <div class="origin-banner-item" data-origin="${esc(orig.node)}">
+        <div class="origin-badge-col">
+          <span class="origin-alert-pill">🚨 CONFIRMED ORIGIN</span>
+          <span class="origin-server-role chip ${roleClass}" style="background:var(--${esc(orig.role)}, #ef4444)">${esc(orig.role)}</span>
+        </div>
+        <div class="origin-main-col">
+          <div class="origin-header-line">
+            <span class="origin-domain-name" title="${esc(orig.node)}">${esc(orig.node)}</span>
+            <span class="origin-time-badge" title="Monitored & sustained for ${esc(orig.durationS)}s">⏱️ Confirmed (${esc(timeAgo)} sustained)</span>
+          </div>
+          <div class="origin-reason-line">
+            <span class="origin-cause-label">Verified Root Cause:</span>
+            <span class="origin-cause-val">${esc(reasonText)}</span>
+          </div>
+          <div class="origin-victim-line">
+            <span class="origin-victim-label">Service Impact:</span>
+            <span class="origin-victim-val">⚠️ ${esc(victimSummary)}</span>
+          </div>
+        </div>
+        <div class="origin-action-col">
+          <button type="button" class="btn small origin-jump-btn" data-locate="${esc(orig.node)}" title="Center and inspect this server">
+            🎯 Locate Server
+          </button>
+        </div>
+      </div>
+    `;
+  }).join("");
+
+  banner.querySelectorAll("[data-locate]").forEach(btn => {
+    btn.addEventListener("click", e => {
+      e.stopPropagation();
+      const targetId = btn.dataset.locate;
+      if (targetId && byId[targetId]) {
+        if (typeof fit === "function") fit(cardIds(targetId));
+        if (typeof showDetail === "function") showDetail(targetId);
+      }
+    });
+  });
 }
 
 // --- inputs ---

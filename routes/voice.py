@@ -76,6 +76,8 @@ def learned_advice(server: Optional[str]) -> dict:
 
 @router.post("/api/voice/alert")
 def speak_alert(body: AlertRequest):
+    if srv.channel_mutes.all_muted(body.channels):
+        return {"muted": True, "audio_url": None, "text": "", "play_id": None}  # alerts ignored for these channels
     event = body.model_dump()
     event["history"] = history_line(body.server)
     event.update(learned_advice(body.server))

@@ -22,11 +22,12 @@ from typing import Callable, Dict, Iterable, List, Optional, Tuple
 from tracer_langsmith import traceable
 
 RAG_DIM = 384  # all-MiniLM-L6-v2
-INDEXES = {"Domain": "domain_embeddings", "SpiderRun": "spider_embeddings", "ActivityLog": "activity_embeddings"}
+INDEXES = {"Domain": "domain_embeddings", "SpiderRun": "spider_embeddings", "ActivityLog": "activity_embeddings", "StandardDoc": "standard_doc_embeddings"}
 LEGACY_INDEXES = ("rag_domain", "rag_spider")  # from before the embeddings were unified
 VECTOR_K = 5  # nearest nodes per index
 MAX_SEEDS = 4
 MAX_DOCS = 8  # context documents besides the overview
+GRAPH_CANDIDATES = 20  # with hybrid search on, the graph walk proposes this many; fusion + reranking pick MAX_DOCS
 VECTOR_MIN_SCORE = 0.65  # cosine; below this a "nearest" node is just noise for the question
 SCHEDULER_WORDS = re.compile(r"auto ?ping|schedul|interval|next run|last run|cron|how often", re.I)
 
@@ -65,8 +66,9 @@ RETURN f AS final, collect(DISTINCT u.domain) AS upstream
 
 
 def _hash(text: str) -> str:
-    from text_embedding import MODEL  # a new model means new vectors
-    return hashlib.sha1(f"{MODEL}\n{text}".encode()).hexdigest()
+    """The profile's SHA-1 fingerprint, the same one the embedding cache uses (a new model means new vectors)."""
+    from text_embedding import fingerprint
+    return fingerprint(text)
 
 
 # --- what gets embedded -------------------------------------------------------------
@@ -121,9 +123,10 @@ def link_entities(question: str, snap) -> Dict[str, List[str]]:
 # --- the retriever ------------------------------------------------------------------
 
 class GraphRAG:
-    def __init__(self, driver, embed: Callable[[List[str]], "object"]):
+    def __init__(self, driver, embed: Callable[[List[str]], "object"], hybrid=None):
         self.driver = driver
         self.embed = embed  # texts -> array of 384-dim vectors
+        self.hybrid = hybrid  # hybrid_search.HybridSearch: BM25 + dense + RRF + reranker over the graph's candidates
         self._indexes_ready = False
         self.last_sync: Dict[str, int] = {}
 
@@ -170,7 +173,7 @@ class GraphRAG:
                     known = r["key"] in snap.nodes
                 elif label == "SpiderRun":
                     known = r["key"] in spider_ids
-                elif label == "ActivityLog":
+                elif label in ("ActivityLog", "StandardDoc"):
                     known = True
                 else:
                     known = False
@@ -187,8 +190,10 @@ class GraphRAG:
         results: List[dict] = [{"document": docs["overview"], "score": 1.0, "via": "overview"}]
         taken = {"overview"}
 
+        cap = GRAPH_CANDIDATES if self.hybrid else MAX_DOCS
+
         def take(doc_id: str, score: float, via: str) -> None:
-            if doc_id in docs and doc_id not in taken and len(results) <= MAX_DOCS:
+            if doc_id in docs and doc_id not in taken and len(results) <= cap:
                 taken.add(doc_id)
                 results.append({"document": docs[doc_id], "score": round(score, 3), "via": via})
 
@@ -205,6 +210,9 @@ class GraphRAG:
                 break
             if label == "ActivityLog":
                 seeds.append(("activity", key, score, "vector"))
+                room -= 1
+            elif label == "StandardDoc":
+                seeds.append(("standard", key, score, "vector"))
                 room -= 1
             else:
                 kind, name = ("server", key) if label == "Domain" else ("channel", spider_to_channel.get(key))
@@ -224,6 +232,11 @@ class GraphRAG:
                     take(act_doc["id"], score, via)
                     if act_doc.get("domain") and act_doc["domain"] in snap.nodes:
                         take(f"server:{act_doc['domain']}", score * 0.85, "graph")
+            elif kind == "standard":
+                std_doc = self._standard_document(name)
+                if std_doc:
+                    docs[std_doc["id"]] = std_doc
+                    take(std_doc["id"], score, via)
             elif kind == "server":
                 take(f"server:{name}", score, via)
                 for channel in snap.nodes[name]["channels"]:
@@ -236,7 +249,43 @@ class GraphRAG:
                 for server in around:
                     take(f"server:{server}", score * 0.8, "graph")
                 self._take_edges(around, docs, take, score * 0.7)
+        if self.hybrid:
+            return self._fuse(question, docs, results, entities)
         return results
+
+    def _fuse(self, question: str, docs: Dict[str, dict], results: List[dict], entities: Dict[str, List[str]]) -> List[dict]:
+        """BM25 + dense + the graph's ranking, fused with RRF and reranked (hybrid_search.py). Names in the question
+        stay in; on any failure the graph's own ranking is used (an answer must never fail over search)."""
+        graph_order = [r["document"]["id"] for r in results if r["via"] != "overview"]
+        pinned = [f"server:{d}" for d in entities["servers"]] + [f"channel:{c}" for c in entities["channels"]]
+        if any(r["via"] == "keyword" for r in results):
+            pinned.append("scheduler")
+        corpus = {i: d for i, d in docs.items() if i != "overview"}
+        try:
+            ranked = self.hybrid.rank(question, corpus, graph_order, pinned=pinned, limit=MAX_DOCS)
+        except Exception as e:
+            print(f"[graphrag] hybrid search skipped: {type(e).__name__}: {e}")
+            return results[:MAX_DOCS + 1]
+        graph_via = {r["document"]["id"]: r["via"] for r in results}
+        return [results[0]] + [{"document": corpus[r["id"]], "score": r["score"],
+                                "via": graph_via.get(r["id"]) or r["sources"][0],  # how the graph found it, else bm25/dense
+                                "sources": r["sources"], "rrf": r["rrf"], "rerank": r["rerank"]} for r in ranked]
+
+    def _standard_document(self, doc_id: str) -> Optional[dict]:
+        try:
+            records = self.driver.execute_query(
+                "MATCH (d:StandardDoc {id: $id}) RETURN properties(d) AS p", id=doc_id
+            ).records
+            if not records:
+                return None
+            p = dict(records[0]["p"])
+            return {
+                "id": f"standard:{doc_id}",
+                "title": f"Technical Standard: {p.get('title', '')} ({p.get('section', '')})",
+                "text": f"### {p.get('title')} — {p.get('section')}\n\n{p.get('content', '')}"
+            }
+        except Exception:
+            return None
 
     def _activity_document(self, act_id: str) -> Optional[dict]:
         try:

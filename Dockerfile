@@ -10,9 +10,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends traceroute && r
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Bake the embedding model (MiniLM, ONNX) into the image, so it works without internet access at runtime.
+# Bake the embedding model (MiniLM) and the chatbot's reranker (ms-marco MiniLM cross-encoder), both ONNX, into the image, so it works without internet access at runtime.
 ENV FASTEMBED_CACHE_PATH=/opt/fastembed HF_HUB_DISABLE_TELEMETRY=1
 RUN python -c "from fastembed import TextEmbedding; TextEmbedding('sentence-transformers/all-MiniLM-L6-v2', cache_dir='/opt/fastembed')" \
+ && python -c "from fastembed.rerank.cross_encoder import TextCrossEncoder; TextCrossEncoder('Xenova/ms-marco-MiniLM-L-6-v2', cache_dir='/opt/fastembed')" \
  && chmod -R a+rX /opt/fastembed
 
 # Bake the local neural Hindi voices (Piper, ~190 MB) into the image: natural alerts with no API calls at runtime.

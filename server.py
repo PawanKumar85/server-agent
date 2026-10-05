@@ -11,6 +11,7 @@ through /api/stream; POST /api/run starts one now, for all channels or a single 
 from chat_eval import ChatEval
 from history_ai import HistoryAI
 from voice import Voice, voice_store
+from channel_mute import ChannelMutes
 from chat_store import ChatStore
 import asyncio
 import json
@@ -19,7 +20,7 @@ import threading
 import time
 import uuid
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
@@ -155,6 +156,16 @@ current_run: Dict[str, dict] = {}  # the run in progress, if any (for pages that
 metrics = metrics_store()
 learner = learning_store(metrics.path)  # what the agent learned (same SQLite file)
 chat_store = ChatStore(metrics.path)  # saved chatbot conversations (same SQLite file)
+
+
+def _pipeline_upstream() -> Dict[str, List[str]]:
+    """Every server's upstream servers in the pipeline (FEEDS / PRODUCES), for the learned "fail together" patterns."""
+    return {r["d"]: r["ups"] for r in driver.execute_query(
+        "MATCH (u:Domain)-[:FEEDS|PRODUCES*1..4]->(d:Domain) RETURN d.domain AS d, collect(DISTINCT u.domain) AS ups").records}
+
+
+learner.upstream_of = _pipeline_upstream
+channel_mutes = ChannelMutes(metrics.path)  # per-channel "ignore alerts" switch (channel_mute.py)
 latest_ranking: Dict[str, Any] = {"at": None, "groups": []}  # from the last run that found failures
 # Escalation: a server failing TRACEROUTE_THRESHOLD times in a row gets a background traceroute (per-host cooldown).
 tracer = TracerouteManager(driver, on_update=lambda event: hub.publish("traceroute", event))
@@ -205,7 +216,6 @@ def compute_adaptive_interval(spider_state: dict, base_interval: int) -> dict:
     # Relaxed tier: stable for >= 7 days with no alerts
     if last_step_raw:
         try:
-            from datetime import timezone
             last_step_dt = datetime.fromisoformat(str(last_step_raw).replace("Z", "+00:00"))
             age_s = now - last_step_dt.timestamp()
             if age_s >= 7 * 24 * 3600 and not alerted:
@@ -821,12 +831,60 @@ def early_warnings() -> List[dict]:
 def current_ranking() -> dict:
     """The likely root cause of each current failure group, ranked (computed now from the live state)."""
     from spider import node_states
-    ids = [r["d"] for r in driver.execute_query(
-        "MATCH (n:Domain) WHERE NOT n.domain ENDS WITH '.invalid' RETURN n.domain AS d").records]
+    node_meta = {
+        r["d"]: {"labels": [l for l in r["labels"] if l != "Domain"], "consec": r["consec"] or 0}
+        for r in driver.execute_query(
+            "MATCH (n:Domain) WHERE NOT n.domain ENDS WITH '.invalid' "
+            "RETURN n.domain AS d, labels(n) AS labels, n.consecutiveFailures AS consec"
+        ).records
+    }
+    ids = list(node_meta.keys())
     states = node_states(driver, ids)
     edges = [r.model_dump() for r in current_topology(driver)]
     groups = rca_rank.rank(states, edges, {n: metrics.anomalies(n) for n in ids}, learner.priors())
-    return {"groups": groups, "down": [n for n, s in states.items() if not s["up"]]}
+    origins = []
+    now_utc = datetime.now(timezone.utc)
+    for g in groups:
+        ranking = g.get("ranking", [])
+        if not ranking:
+            continue
+        top = ranking[0]
+        victims = [r["node"] for r in ranking[1:] if not states.get(r["node"], {}).get("up", True)]
+
+        onset_iso = top.get("onsetAt")
+        duration_s = 0
+        if onset_iso:
+            try:
+                dt = datetime.fromisoformat(onset_iso.replace("Z", "+00:00"))
+                duration_s = max(0, int((now_utc - dt).total_seconds()))
+            except Exception:
+                duration_s = 0
+
+        labels = node_meta.get(top["node"], {}).get("labels", [])
+        is_backup_only = "BackupLink" in labels and "MainInput" not in labels
+        consec = node_meta.get(top["node"], {}).get("consec", 0)
+
+        # Multi-angle confirmation:
+        # 1. If BackupLink and no downstream victims -> Standby backup link idle, not an outage!
+        if is_backup_only and len(victims) == 0:
+            continue
+
+        # 2. Must be monitored and sustained for at least 60 seconds (rule out transient blips)
+        is_confirmed = duration_s >= 60 and (consec >= 2 or duration_s >= 120)
+
+        origins.append({
+            "origin_node": top["node"],
+            "role": labels[0] if labels else "Server",
+            "score": top["score"],
+            "onsetAt": top.get("onsetAt"),
+            "duration_s": duration_s,
+            "consecutive_failures": consec,
+            "confirmed": is_confirmed,
+            "reasons": top.get("reasons", []),
+            "victims": victims,
+            "victim_count": len(victims)
+        })
+    return {"groups": groups, "origins": origins, "down": [n for n, s in states.items() if not s["up"]]}
 
 
 @app.get("/api/pool/stats")
@@ -836,8 +894,8 @@ async def api_pool_stats():
 
 
 # The routes live in routes/ (imported last: they read this module's state at call time).
-from routes import chat, diagnostics, learning, monitor, notifications, pages, reports, skills, voice as voice_routes  # noqa: E402
+from routes import channels, chat, diagnostics, learning, monitor, notifications, pages, reports, skills, voice as voice_routes  # noqa: E402
 
-for _module in (pages, monitor, diagnostics, reports, chat, skills, learning, notifications, voice_routes):
+for _module in (pages, monitor, diagnostics, reports, chat, skills, learning, notifications, voice_routes, channels):
     app.include_router(_module.router)
 

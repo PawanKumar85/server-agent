@@ -1,18 +1,14 @@
 """Monitor routes (split out of server.py). Shared state and helpers are read from the server
 module at call time as `srv.<name>`, so there is one copy of each and tests can patch them there."""
 
-from fastapi import APIRouter
-from fastapi import HTTPException
-from fastapi import Query
+from fastapi import APIRouter, Body, HTTPException, Query
 from fastapi.responses import JSONResponse
 from fastapi.responses import Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from pydantic import Field
 from pydantic import ValidationError
-from typing import Dict
-from typing import List
-from typing import Optional
+from typing import Any, Dict, List, Optional
 import asyncio
 import json
 
@@ -432,4 +428,77 @@ def cdn_geo_matrix():
         "top_recommendation": analysis.get("top_recommendation", {}),
         "active_nodes_evaluated": analysis.get("active_nodes_evaluated", 0)
     }
+
+
+@router.get("/api/pool/library")
+def get_datapool_library(force: bool = False):
+    """Returns the complete in-memory Telemetry Data Pool catalog for the Library view."""
+    from telemetry_pool import telemetry_pool
+    if force:
+        telemetry_pool.invalidate()
+    nodes = telemetry_pool.get_nodes(srv.driver)
+    channels = telemetry_pool.get_channels(srv.driver)
+    stats = telemetry_pool.stats()
+
+    freshness_summary = {"FRESH": 0, "WARM": 0, "STALE": 0, "UNKNOWN": 0}
+    total_links = 0
+    for n in nodes.values():
+        f = n.get("streamFreshness") or "UNKNOWN"
+        freshness_summary[f] = freshness_summary.get(f, 0) + 1
+        total_links += len(n.get("links", []))
+
+    return {
+        "stats": stats,
+        "summary": {
+            "node_count": len(nodes),
+            "channel_count": len(channels),
+            "link_count": total_links,
+            "freshness": freshness_summary,
+            "ttl_s": telemetry_pool.ttl,
+            "is_fresh": telemetry_pool.is_fresh(),
+        },
+        "nodes": list(nodes.values()),
+        "channels": [
+            {"channel": ch, "roles": roles, "total_streams": sum(len(v) for v in roles.values())}
+            for ch, roles in sorted(channels.items())
+        ],
+    }
+
+
+@router.post("/api/pool/refresh")
+def refresh_datapool():
+    """Forces cache invalidation and immediate re-indexing of the Telemetry Data Pool."""
+    from telemetry_pool import telemetry_pool
+    telemetry_pool.invalidate()
+    nodes = telemetry_pool.get_nodes(srv.driver, force_refresh=True)
+    channels = telemetry_pool.get_channels(srv.driver, force_refresh=True)
+    return {
+        "status": "ok",
+        "message": "Data Pool re-indexed successfully",
+        "stats": telemetry_pool.stats(),
+        "node_count": len(nodes),
+        "channel_count": len(channels),
+    }
+
+
+@router.get("/api/agent/mcp_tools")
+def get_mcp_tools():
+    """List all Model Context Protocol (MCP) tools and schemas."""
+    from mcp_server import mcp_server
+    return {
+        "status": "ok",
+        "protocol": "Model Context Protocol (MCP) v1.0",
+        "tool_count": len(mcp_server.get_tools_metadata()),
+        "tools": mcp_server.get_tools_metadata(),
+        "mcp_schema": mcp_server.list_tools(),
+    }
+
+
+@router.post("/api/agent/mcp_tools/{tool_name}/execute")
+def execute_mcp_tool(tool_name: str, payload: Dict[str, Any] = Body(default={})):
+    """Execute a Model Context Protocol (MCP) tool."""
+    from mcp_server import mcp_server
+    return mcp_server.call_tool(tool_name, payload)
+
+
 

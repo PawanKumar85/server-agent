@@ -55,6 +55,12 @@ STYLES: Dict[str, dict] = {
 
 # Problems in the words people use, and the first steps to fix each (spoken after the alert).
 PROBLEMS = [
+    (r"audio missing|without sound|audio cutting|no audio", "picture aa rahi hai par awaaz nahi aa rahi",
+     "encoder ka audio input aur audio mapping dekho, phir encoder restart karo"),
+    (r"video missing|without picture", "awaaz aa rahi hai par picture nahi aa rahi",
+     "encoder ka video input dekho, phir encoder restart karo"),
+    (r"out of sync|desync", "awaaz aur picture ka sync bigad gaya hai",
+     "encoder restart karo, aur input feed ka timing dekho"),
     (r"404|manifest|playlist missing|not found", "playlist hi nahi mil rahi, 404 aa raha hai",
      "encoder ka push chal raha hai ki nahi dekho, phir origin pe playlist ka path check karo"),
     (r"stale|stopped updating|freeze|frozen|old segment|segment age", "video aage nahi badh raha, stream atak gayi hai",

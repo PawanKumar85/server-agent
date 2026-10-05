@@ -33,6 +33,7 @@
       <button class="nav-item" data-view="relationships"><span class="ico">⇢</span><span>Relationships</span></button>
       <button class="nav-item" data-view="agent"><span class="ico">🤖</span><span>Agent</span></button>
       <button class="nav-item" data-view="learning"><span class="ico">🧠</span><span>Learning</span></button>
+      <button class="nav-item" data-view="datapool" title="In-Memory Telemetry Data Pool Library"><span class="ico">📚</span><span>Data Pool Library</span></button>
     </nav>
     <div class="nav-notification-group">
       <button class="nav-item" data-view="notifications" id="nav-btn-notifications" title="Alert & Incident Notifications">
@@ -126,6 +127,7 @@
             <button type="button" class="canvas-search-clear" id="canvas-search-clear" aria-label="Clear search" hidden>×</button>
           </div>
           <div id="canvas-top">
+            <div id="rca-origin-banner" class="origin-banner" hidden></div>
             <div id="legend"></div>
           </div>
           <div id="world"><svg id="edges"></svg></div>
@@ -281,7 +283,12 @@
               <button type="button" class="agent-subnav-tab" data-subview="tools" id="chat-tools-btn" title="System Diagnostics, Reporting & Autonomous Tools">
                 <span class="ico">🛠</span>
                 <span>Tools</span>
-                <span class="subnav-pill">15</span>
+                <span class="subnav-pill">18</span>
+              </button>
+              <button type="button" class="agent-subnav-tab" data-subview="mcp_tools" id="chat-mcp-btn" title="Model Context Protocol (MCP) Multi-Channel Notification & Integration Tools">
+                <span class="ico">⚡</span>
+                <span>MCP Tools</span>
+                <span class="subnav-pill">7</span>
               </button>
               <button type="button" class="agent-subnav-tab" data-subview="skills" id="chat-skills-btn" title="Engineering Knowledge & Architecture Playbooks">
                 <span class="ico">🧠</span>
@@ -406,6 +413,11 @@
               <span class="ico">🛠</span>
               <span>Tools</span>
               <span class="subnav-pill">18</span>
+            </button>
+            <button type="button" class="agent-subnav-tab" data-subview="mcp_tools" title="Model Context Protocol (MCP) Multi-Channel Notification & Integration Tools">
+              <span class="ico">⚡</span>
+              <span>MCP Tools</span>
+              <span class="subnav-pill">7</span>
             </button>
             <button type="button" class="agent-subnav-tab" data-subview="skills">
               <span class="ico">🧠</span>
@@ -905,6 +917,51 @@
         </div>
       </section>
 
+      <!-- MCP Tools -->
+      <section class="view" id="view-mcp_tools">
+        <div class="agent-subnav" style="margin-bottom: 16px;">
+          <div class="agent-subnav-tabs">
+            <button type="button" class="agent-subnav-tab" data-subview="agent">
+              <span class="ico">🤖</span>
+              <span>Agent</span>
+            </button>
+            <button type="button" class="agent-subnav-tab" data-subview="tools">
+              <span class="ico">🛠</span>
+              <span>Tools</span>
+              <span class="subnav-pill">18</span>
+            </button>
+            <button type="button" class="agent-subnav-tab active" data-subview="mcp_tools">
+              <span class="ico">⚡</span>
+              <span>MCP Tools</span>
+              <span class="subnav-pill">7</span>
+            </button>
+            <button type="button" class="agent-subnav-tab" data-subview="skills">
+              <span class="ico">🧠</span>
+              <span>Skills</span>
+              <span class="subnav-pill">7</span>
+            </button>
+          </div>
+          <div class="agent-subnav-actions">
+            <button type="button" class="btn small" onclick="copyAllMcpSpec()">📋 Copy All MCP JSON</button>
+            <button type="button" class="btn small" onclick="loadMcpTools()">🔄 Refresh MCP</button>
+          </div>
+        </div>
+
+        <div class="mcp-protocol-banner">
+          <div>
+            <h4 class="mcp-banner-title">⚡ Model Context Protocol (MCP) Tools Registry</h4>
+            <p class="mcp-banner-desc">
+              Standard Open-Source MCP v1.0 multi-channel alert &amp; notification dispatcher. Exposes WhatsApp, SMS, Email, Slack, Telegram, Webhook, and PagerDuty tooling directly callable by autonomous LLM agents or automated monitoring pipelines.
+            </p>
+          </div>
+          <div>
+            <span class="badge status-up" style="font-size:11px;padding:4px 10px;border-radius:12px;">● MCP Protocol v1.0 Online</span>
+          </div>
+        </div>
+
+        <div class="tools-grid" id="mcp-tools-grid"></div>
+      </section>
+
       <!-- Skills -->
       <section class="view" id="view-skills">
         <div class="agent-subnav" style="margin-bottom: 16px;">
@@ -916,7 +973,12 @@
             <button type="button" class="agent-subnav-tab" data-subview="tools">
               <span class="ico">🛠</span>
               <span>Tools</span>
-              <span class="subnav-pill">15</span>
+              <span class="subnav-pill">18</span>
+            </button>
+            <button type="button" class="agent-subnav-tab" data-subview="mcp_tools" title="Model Context Protocol (MCP) Multi-Channel Notification & Integration Tools">
+              <span class="ico">⚡</span>
+              <span>MCP Tools</span>
+              <span class="subnav-pill">7</span>
             </button>
             <button type="button" class="agent-subnav-tab active" data-subview="skills">
               <span class="ico">🧠</span>
@@ -969,6 +1031,73 @@
 
         <!-- Channel containers and node cards rendered dynamically by notifications-view.js -->
         <div id="notifications-content" class="notifications-content"></div>
+      </section>
+
+      <!-- Data Pool Library: Curated In-Memory Telemetry Catalog & Cache Stacks -->
+      <section class="view" id="view-datapool">
+        <div class="datapool-header">
+          <div>
+            <p class="lead">Curated in-memory telemetry repository. Microsecond (&lt;0.1ms) thread-safe data cache indexing server nodes, broadcast channels, stream health, and HLS buffer freshness.</p>
+          </div>
+          <div class="datapool-actions-bar">
+            <button class="btn small" id="datapool-refresh-btn" title="Re-query Neo4j and restock in-memory pool">↻ Restock Library</button>
+          </div>
+        </div>
+
+        <!-- Library Desk Statistics -->
+        <div class="library-desk-stats">
+          <div class="library-stat-card">
+            <div class="lib-stat-header">
+              <span class="lib-stat-label">Catalog Volume</span>
+              <span class="lib-stat-icon">📖</span>
+            </div>
+            <div class="lib-stat-val" id="datapool-stat-volume">–</div>
+            <div class="lib-stat-sub" id="datapool-stat-links">Live Stream Records</div>
+          </div>
+          <div class="library-stat-card">
+            <div class="lib-stat-header">
+              <span class="lib-stat-label">Cache Hit Ratio</span>
+              <span class="lib-stat-icon">🎯</span>
+            </div>
+            <div class="lib-stat-val" id="datapool-stat-ratio">–</div>
+            <div class="lib-stat-sub" id="datapool-stat-hits">0 hits / 0 misses</div>
+          </div>
+          <div class="library-stat-card">
+            <div class="lib-stat-header">
+              <span class="lib-stat-label">Freshness Spectrum</span>
+              <span class="lib-stat-icon">⏱</span>
+            </div>
+            <div class="lib-stat-val" id="datapool-stat-freshness">–</div>
+            <div class="lib-stat-sub" id="datapool-stat-age">TTL: 5.0s</div>
+          </div>
+          <div class="library-stat-card">
+            <div class="lib-stat-header">
+              <span class="lib-stat-label">Access Latency</span>
+              <span class="lib-stat-icon">⚡</span>
+            </div>
+            <div class="lib-stat-val" id="datapool-stat-speed">&lt; 0.1 ms</div>
+            <div class="lib-stat-sub" id="datapool-stat-engine">Thread-Safe In-Memory Cache</div>
+          </div>
+        </div>
+
+        <!-- Library Shelf Navigation & Search Bar -->
+        <div class="library-shelf-nav">
+          <div class="shelf-tabs-group" role="tablist">
+            <button type="button" class="shelf-tab-btn active" data-shelf="all"><span>📚 All Stacks</span></button>
+            <button type="button" class="shelf-tab-btn" data-shelf="nodes"><span>🖥 Server Nodes</span></button>
+            <button type="button" class="shelf-tab-btn" data-shelf="channels"><span>📺 Channels</span></button>
+            <button type="button" class="shelf-tab-btn" data-shelf="freshness"><span>⏱ Freshness</span></button>
+            <button type="button" class="shelf-tab-btn" data-shelf="raw"><span>⚙️ Raw Cache JSON</span></button>
+          </div>
+          <div class="library-search-box">
+            <input type="search" class="library-search-input" id="datapool-search-input" placeholder="Search catalog by domain, channel, IP, role..." aria-label="Search Data Pool catalog">
+          </div>
+        </div>
+
+        <!-- Dynamic Shelves & Book Grid Container -->
+        <div id="datapool-shelves-content" class="datapool-shelves-container">
+          <div class="library-empty-notice">Loading Data Pool Catalog...</div>
+        </div>
       </section>
     </main>
   </div>
@@ -1229,6 +1358,53 @@
           <button type="submit" class="btn primary">Add Destination</button>
         </footer>
       </form>
+    </div>
+  </div>
+
+  <!-- Data Pool Entry Reader Modal -->
+  <div id="datapool-modal" class="modal-backdrop" hidden>
+    <div class="modal-card" style="max-width: 900px; width: 95vw; max-height: 85vh; display: flex; flex-direction: column;" role="dialog" aria-modal="true" aria-labelledby="datapool-modal-title">
+      <header>
+        <div style="min-width:0;">
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+            <span style="font-size:18px">📖</span>
+            <h3 id="datapool-modal-title" style="margin:0;">Library Entry Reader</h3>
+            <span class="badge" id="datapool-modal-badge" style="font-size:10px;padding:2px 8px;border-radius:10px;">Record</span>
+          </div>
+        </div>
+        <button class="close" id="datapool-modal-close" title="Close (Esc)">×</button>
+      </header>
+      <div id="datapool-modal-body" style="padding:16px 20px;overflow-y:auto;flex:1;"></div>
+    </div>
+  </div>
+
+  <!-- Interactive MCP Test Runner Modal -->
+  <div id="mcp-test-modal" class="modal-backdrop" hidden>
+    <div class="modal-card" style="max-width: 680px; width: 95vw; max-height: 85vh; display: flex; flex-direction: column;" role="dialog" aria-modal="true">
+      <header>
+        <div>
+          <h3 id="mcp-modal-title">Test MCP Tool</h3>
+          <div class="sub" id="mcp-modal-subtitle" style="margin-top:2px;"></div>
+        </div>
+        <button class="close" id="mcp-test-modal-close" title="Close (Esc)">×</button>
+      </header>
+      <div style="padding: 16px 20px; overflow-y: auto; flex: 1;">
+        <div style="margin-bottom: 12px;">
+          <label style="font-size: 11px; font-weight: 600; text-transform: uppercase; color: var(--muted); display: block; margin-bottom: 4px;">Input Arguments (JSON)</label>
+          <textarea id="mcp-test-payload" rows="6" style="width: 100%; font-family: monospace; font-size: 12px; padding: 10px; border-radius: 8px; border: 1px solid var(--card-border); background: var(--canvas); color: var(--text); resize: vertical;"></textarea>
+        </div>
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+          <span class="badge" id="mcp-test-status">Ready</span>
+          <button type="button" class="btn primary small" id="mcp-run-btn">🚀 Send MCP Request</button>
+        </div>
+        <div>
+          <label style="font-size: 11px; font-weight: 600; text-transform: uppercase; color: var(--muted); display: block; margin-bottom: 4px;">Server Response (MCP Envelope)</label>
+          <pre id="mcp-test-output" style="background: var(--canvas); border: 1px solid var(--card-border); border-radius: 8px; padding: 10px; font-size: 12px; max-height: 240px; overflow: auto; color: var(--text); margin: 0;">Click 'Send MCP Request' to execute this tool.</pre>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div id="toasts"></div>
   <script src="/static/hls.min.js"></script>  <!-- hls.js 1.5.20, served locally (works without internet) -->
   <!-- The page's scripts, in order (classic scripts sharing one scope; boot.js starts everything). -->
@@ -1250,6 +1426,8 @@
   <script src="/static/learning-view.js"></script>
   <script src="/static/servers-view.js"></script>
   <script src="/static/notifications-view.js"></script>
+  <script src="/static/datapool-library.js"></script>
+  <script src="/static/mcp-tools.js"></script>
   <script src="/static/boot.js"></script>
 </body>
 

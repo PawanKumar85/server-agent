@@ -57,13 +57,15 @@ function renderGraph(graph) {
   els = {}; spiderEls = {}; spiderAt = {}; moving = new Set();
   $("#canvas-empty").hidden = G.nodes.length > 0;
 
-  const roots = new Set(G.spiders.filter(s => s.status === "STOPPED").map(s => s.at));
+  const confirmedList = (typeof getConfirmedOrigins === "function") ? getConfirmedOrigins() : [];
+  const roots = new Set(confirmedList.map(o => o.node));
   for (const n of G.nodes) {
     for (const cid of splitCards[n.id] || []) {  // per-channel Final cards
       const info = cardInfo[cid], p = pos[cid], h = (n.urlHealth || {})[info.url] || {};
       const st = h.up === false ? "DOWN" : h.up ? "UP" : n.status;
+      const isRoot = roots.has(n.id);
       const el = document.createElement("div");
-      el.className = "node" + (roots.has(n.id) ? " root" : "");
+      el.className = "node" + (isRoot ? " root origin-root" : "");
       el.style.cssText = `left:${p.x}px;top:${p.y}px;width:${W}px;height:${H}px`;
       el.dataset.node = n.id; el.dataset.url = info.url;  // for its alert (node-alerts.js)
       el.innerHTML = `
@@ -73,7 +75,8 @@ function renderGraph(graph) {
           <div class="title"><span class="dot" style="background:${statusColor(st)}"></span>${esc(info.channel)}</div>
           <div class="chips one-line"><span class="chip" style="background:var(--FinalLink)">Final</span>${feedBadge(info.channel)}<span class="sub" title="${esc(n.id)}">${esc(n.id)}</span></div>
           <div class="stats">${st || "not checked"} · ping ${n.pingCount ?? 0}${h.detail ? " · " + esc(h.detail) : ""}</div>
-        </div>`;
+        </div>
+        ${isRoot ? `<div class="origin-corner-badge" title="Origin of Failure (Problem started here)">🚨 ORIGIN</div>` : ""}`;
       el.dataset.stats = el.querySelector(".stats").textContent;
       el.addEventListener("mousedown", e => startDrag(e, cid));
       el.addEventListener("click", () => { if (!el.dataset.dragged) showDetail(n.id); delete el.dataset.dragged; });
@@ -83,8 +86,9 @@ function renderGraph(graph) {
     }
     const p = pos[n.id]; if (!p) continue;
     const primary = G.roleOrder.find(r => n.labels.includes(r)) || n.labels[0] || "";
+    const isRoot = roots.has(n.id);
     const el = document.createElement("div");
-    el.className = "node" + (roots.has(n.id) ? " root" : "");
+    el.className = "node" + (isRoot ? " root origin-root" : "");
     el.style.cssText = `left:${p.x}px;top:${p.y}px;width:${W}px;height:${H}px`;
     el.dataset.node = n.id;
     const urls = (n.urls || []).length, down = Object.values(n.urlHealth || {}).filter(h => h.up === false).length;
@@ -95,7 +99,8 @@ function renderGraph(graph) {
         <div class="title"><span class="dot" style="background:${statusColor(n.status)}"></span>${esc(n.id)}</div>
         <div class="chips">${n.labels.map(l => `<span class="chip" style="background:var(--${l}, #888)">${esc(short(l))}</span>`).join("")}</div>
         <div class="stats">${n.status || "not checked"} · ${urls} URL${urls === 1 ? "" : "s"}${down ? ` (${down} down)` : ""} · ping ${n.pingCount ?? 0}${n.latency != null ? ` · ${Math.round(n.latency)} ms` : ""}</div>
-      </div>`;
+      </div>
+      ${isRoot ? `<div class="origin-corner-badge" title="Origin of Failure (Problem started here)">🚨 ORIGIN</div>` : ""}`;
     el.dataset.stats = el.querySelector(".stats").textContent;
     el.addEventListener("mousedown", e => startDrag(e, n.id));
     el.addEventListener("click", () => { if (!el.dataset.dragged) showDetail(n.id); delete el.dataset.dragged; });

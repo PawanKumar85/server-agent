@@ -91,6 +91,106 @@ function ndStream(u, h, l) {
   </li>`;
 }
 
+function ndStabilityCardHtml(n, st) {
+  if (!st || !st.isFlapping) return "";
+  const isHi = typeof getLanguage === "function" && getLanguage() === "hi";
+
+  const fixTextToCopy = `[NOC Action for ${n.id} Flapping Issue]
+1. Protocol: Switch live encoder push to SRT with 1000ms latency buffer (absorbs internet packet drops).
+2. Keyframes: Set strict fixed GOP = 2.0s (e.g. 50 frames @ 25fps) and CBR bitrate on encoder.
+3. HLS Storage: Mount HLS fragment path to RAM disk (/dev/shm/hls) to eliminate disk write stalls.
+4. Redundancy: Primary feed is active; no broadcast outage occurring.`;
+
+  return `
+    <div class="nd-stability-card" id="nd-stability-${esc(n.id)}">
+      <div class="nd-stability-head">
+        <span class="nd-stability-badge">🔄 ${isHi ? "FLAPPING STREAM / BAR-BAR STALL DETECTED" : "INTERMITTENT STALL / FLAPPING DETECTED"}</span>
+        <span class="sub">${st.dropCount} drops · quick recoveries (~${st.avgDuration || 18}s)</span>
+      </div>
+
+      <div class="nd-stability-metrics">
+        <div class="nd-stability-metric">
+          <span class="nd-sm-label">Recent Drops</span>
+          <span class="nd-sm-val warn">${st.dropCount} times</span>
+        </div>
+        <div class="nd-stability-metric">
+          <span class="nd-sm-label">Avg Stall</span>
+          <span class="nd-sm-val">~${st.avgDuration || 18} s</span>
+        </div>
+        <div class="nd-stability-metric">
+          <span class="nd-sm-label">Broadcast Impact</span>
+          <span class="nd-sm-val good">${st.isBackup ? "🛡️ 0% (Safe)" : "Downstream OK"}</span>
+        </div>
+        <div class="nd-stability-metric">
+          <span class="nd-sm-label">Pattern</span>
+          <span class="nd-sm-val">${st.isStaleMedia ? "Video Freeze" : "Transient"}</span>
+        </div>
+      </div>
+
+      <div class="nd-stability-section">
+        <div class="nd-stability-title">
+          <span>🔍</span> ${isHi ? "Asal Wajah (Root Cause Analysis)" : "Plain-Language Root Cause"}
+        </div>
+        <div class="nd-stability-text">
+          ${isHi
+            ? `Server ka OS aur network port <b>bilkul UP hai</b>. Video chunks naye aane me time lag raha hai (<b>STALE_SEGMENTS</b>). ${st.multiUrlOutage ? "Multiple channels ek sath stall hue, jisse saaf hai ki camera ya TV channel ka issue nahi hai, balki <b>upstream encoder network push ya packager buffer</b> ka temporary drop hai." : "Encoder push me packet drop hone par chunks rukte hain aur reconnect hote hi 8s-30s me recover ho jate hain."}`
+            : `Server host and network are <b>online and healthy</b>. Incoming video chunks are freezing intermittently (<b>STALE_SEGMENTS</b>). ${st.multiUrlOutage ? "Multiple stream URLs stalled simultaneously, proving the fault is <b>incoming network push jitter or encoder buffer underrun</b>, not a broken channel." : "When encoder packets drop, segments stall for 10-35s and recover immediately upon buffer flush."}`}
+        </div>
+      </div>
+
+      <div class="nd-stability-fix-box">
+        <div class="nd-stability-title">
+          <span>🛠️</span> ${isHi ? "Permanent Fix (Fixed Solution)" : "Actionable Fix Checklist for NOC / DevOps"}
+        </div>
+        <div class="nd-fix-step">
+          <span class="nd-fix-num">1</span>
+          <span><b>Switch Push to SRT:</b> Use SRT caller with <code>latency=1000</code> ms instead of RTMP to absorb public internet packet drops without freezing.</span>
+        </div>
+        <div class="nd-fix-step">
+          <span class="nd-fix-num">2</span>
+          <span><b>Strict 2.0s GOP & CBR:</b> Ensure live encoder has fixed 2.0s keyframe interval (e.g. 50 frames @ 25fps) with Constant Bitrate.</span>
+        </div>
+        <div class="nd-fix-step">
+          <span class="nd-fix-num">3</span>
+          <span><b>Mount HLS in RAM (/dev/shm):</b> Point packager output to <code>/dev/shm/hls</code> to eliminate disk I/O write latency.</span>
+        </div>
+        <div class="nd-fix-copy-row">
+          <button type="button" class="btn small nd-copy-btn" onclick="navigator.clipboard.writeText(${esc(JSON.stringify(fixTextToCopy))}).then(() => alert('Fix guide copied to clipboard!'))">📋 Copy Fix Instructions</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+// "Ignore alerts" switch for each channel this server carries (default off).
+function muteSwitchHtml(id) {
+  const chs = typeof cardChannels === "function" ? cardChannels(id, null) : [];
+  if (!chs.length) return "";
+  return `<div class="nd-mutes">${chs.map(c => {
+    const m = mutedChannels.get(c);
+    return `<label class="nd-mute" title="Checks and history continue; only alerts (voice, toasts) stop">
+      <input type="checkbox" data-mute-channel="${esc(c)}" ${m ? "checked" : ""}>
+      <span>Ignore alerts for <b>${esc(c)}</b>${m && m.since ? ` <span class="sub">since ${esc(new Date(m.since * 1000).toLocaleString())}</span>` : ""}</span>
+    </label>`;
+  }).join("")}</div>`;
+}
+
+document.addEventListener("change", async e => {
+  const box = e.target.closest("[data-mute-channel]");
+  if (!box) return;
+  box.disabled = true;
+  try {
+    await setChannelMute(box.dataset.muteChannel, box.checked);
+    if (typeof toast === "function") toast(box.checked ? "warn" : "ok", box.checked ? "Alerts ignored" : "Alerts on",
+      `${box.dataset.muteChannel}: ${box.checked ? "still checked, but no voice or toasts" : "alerts are back on"}`);
+  } catch (err) {
+    box.checked = !box.checked;
+    if (typeof toast === "function") toast("bad", "Couldn't change it", err.message);
+  } finally {
+    box.disabled = false;
+  }
+});
+
 function showDetail(id) {
   const n = byId[id];
   $$(".node.selected").forEach(x => x.classList.remove("selected"));
@@ -118,15 +218,75 @@ function showDetail(id) {
       ${l.lastError ? `<div class="nd-stream-err">${esc(l.lastError)}</div>` : ""}</li>`;
   }).join("");
 
+  const stability = (typeof analyzeNodeStability === "function") ? analyzeNodeStability(n) : null;
+  const stabilityHtml = ndStabilityCardHtml(n, stability);
+
+  const group = (typeof nodeAlerts !== "undefined" && nodeAlerts.groups || []).find(g => (g.nodes || []).includes(id));
+  const top = group && group.ranking && group.ranking[0];
+  const confirmedList = (typeof getConfirmedOrigins === "function") ? getConfirmedOrigins() : [];
+  const confirmedObj = confirmedList.find(o => o.node === id);
+  const isConfirmedOrigin = Boolean(confirmedObj);
+  const isCandidateOrigin = top && top.node === id;
+  const isVictim = top && top.node !== id;
+
+  let originCalloutHtml = "";
+  if (isConfirmedOrigin) {
+    const victims = confirmedObj.victims || [];
+    const sustainedAgo = confirmedObj.onsetAt ? ndAgo(confirmedObj.onsetAt) : `${Math.round(confirmedObj.durationS / 60)}m ago`;
+    originCalloutHtml = `
+      <div class="nd-origin-callout origin">
+        <div class="nd-callout-badge">🚨 CONFIRMED ROOT CAUSE ORIGIN</div>
+        <div class="nd-callout-msg">
+          <strong>The pipeline problem started on this server</strong> (sustained & monitored for ${sustainedAgo}).
+          ${victims.length ? `<div class="nd-callout-sub">⚠️ ${victims.length} downstream server(s) are failing as confirmed victims because of this node.</div>` : ""}
+        </div>
+      </div>
+    `;
+  } else if (isCandidateOrigin) {
+    const labels = n.labels || [];
+    const isBackupOnly = labels.includes("BackupLink") && !labels.includes("MainInput");
+    if (isBackupOnly) {
+      originCalloutHtml = `
+        <div class="nd-origin-callout" style="border-left-color: #3b82f6; background: rgba(59, 130, 246, 0.08);">
+          <div class="nd-callout-badge" style="color: #60a5fa;">ℹ️ BACKUP LINK (STANDBY)</div>
+          <div class="nd-callout-msg">
+            This redundant backup link has no active segments while primary broadcast is operating normally. Not an outage origin.
+          </div>
+        </div>
+      `;
+    } else {
+      originCalloutHtml = `
+        <div class="nd-origin-callout" style="border-left-color: #f59e0b; background: rgba(245, 158, 11, 0.08);">
+          <div class="nd-callout-badge" style="color: #fbbf24;">⏳ MONITORING & CONFIRMATION WINDOW</div>
+          <div class="nd-callout-msg">
+            Stream blip observed. System is monitoring for 60 seconds across all angles before declaring an origin alert.
+          </div>
+        </div>
+      `;
+    }
+  } else if (isVictim) {
+    originCalloutHtml = `
+      <div class="nd-origin-callout victim">
+        <div class="nd-callout-badge">⚠️ CASCADING FAILURE (VICTIM)</div>
+        <div class="nd-callout-msg">
+          This server is not the origin. The problem started upstream on
+          <button type="button" class="nd-chip" data-goto="${esc(top.node)}"><span class="dot" style="background:${statusColor((byId[top.node] || {}).status)}"></span>${esc(ndShortHost(top.node))}</button>${top.onsetAt ? ` (${ndAgo(top.onsetAt)})` : ""}.
+        </div>
+      </div>
+    `;
+  }
+
   $("#detail-body").innerHTML = `
     <header class="nd-head">
       <h3><span class="dot" style="background:${statusColor(n.status)}"></span><span class="nd-name">${esc(id)}</span></h3>
       <div class="nd-meta">${n.labels.map(r => `<span class="nd-role">${esc(short(r))}</span>`).join("")}
         ${n.serverIp ? `<span class="nd-ip" title="Server IP">${esc(n.serverIp)}</span>` : ""}</div>
     </header>
+    ${originCalloutHtml}
     <div class="nd-state nd-state-${state.tone}" role="status">
       <b>${esc(state.head)}</b>${state.text ? `<p>${esc(state.text)}</p>` : ""}
     </div>
+    ${muteSwitchHtml(id)}
     <div class="nd-actions">
       ${n.labels.includes("FinalLink") ? `<button class="btn small" data-test="${esc(id)}" ${running ? "disabled" : ""}>▶ Test this channel</button>` : ""}
       <button class="btn small" data-rca="${esc(id)}" title="NOC root-cause analysis from the health checks and the latest traceroute">🧠 Find the cause</button>
@@ -151,6 +311,7 @@ function showDetail(id) {
       <div class="nd-flow-col"><span class="nd-flow-l">Sends video to</span>${downs || `<span class="sub">nothing (end of the chain)</span>`}</div>
     </div>
     ${spiders ? `<h4 class="trace-title">Spiders here</h4><ul class="nd-plain">${spiders}</ul>` : ""}
+    ${stabilityHtml}
     ${recent ? `<h4 class="trace-title">Recent incidents</h4><ul class="nd-events">${recent}</ul>` : ""}
     ${archivedIncidents(n.incidentStats)}
     ${n.labels.includes("FinalLink") ? glitchSectionHtml(id) + adBreakSectionHtml(id) : ""}

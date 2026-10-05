@@ -125,8 +125,7 @@ def test_patterns_time_of_day_recurrence_and_nodes_failing_together(world):
     assert any(t.startswith("ingest1 has had 4 outages, usually lasting about 6 min, mostly because the video stopped updating") for t in texts)
     assert any("ingest1 usually fails between 02:00 and 04:00 IST" in t for t in texts)
     assert any("ingest1 fails about every" in t for t in texts)
-    assert any("ingest1 and final have failed together 4 times; ingest1 usually goes first" in t
-               or "final and ingest1 have failed together 4 times; ingest1 usually goes first" in t for t in texts)
+    assert any("have failed together 4 times" in t and "ingest1 usually goes first" in t for t in texts)
 
 
 def test_context_is_empty_with_nothing_learned(world):
@@ -204,3 +203,27 @@ def test_dynamic_alert_policy_and_feedback(world):
     assert success is True
     success_silence = learner.record_alert_outcome("ingest1", "silenced_fast")
     assert success_silence is True
+
+
+
+def test_two_frequent_failers_meeting_by_chance_are_not_a_pattern(world):
+    metrics, learner = world
+    # flappy fails every 5 min and noisy every 6 min, for a day, independently: they often land within 3 min of
+    # each other by pure chance, which must not be reported as "failing together".
+    for k in range(288):
+        log(metrics, outage("flappy", at(5 * k), 0.3))
+    for k in range(240):
+        log(metrics, outage("noisy", at(6 * k + 2), 0.3))
+    assert not [p for p in learner.patterns() if p["kind"] == "together"]
+
+
+def test_the_pipeline_decides_who_is_the_likely_cause(world):
+    metrics, learner = world
+    learner.upstream_of = lambda: {"final": ["ingest1"]}  # ingest1 feeds final
+    for day in range(4):  # but the checks notice final first every time
+        log(metrics, outage("final", at(0, days=day), 5), outage("ingest1", at(1, days=day), 5))
+    learner._patterns = None
+    together = next(p for p in learner.patterns() if p["kind"] == "together")
+    assert together["nodes"] == ["ingest1", "final"]
+    assert "ingest1 feeds final, so ingest1 is the likely cause" in together["text"]
+    assert "goes first" not in together["text"] and together["lift"] >= 2

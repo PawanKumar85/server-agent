@@ -519,6 +519,7 @@ async function runSpeechJob(job, current, onStop) {
   } catch (_) { /* timeout or server down: the browser voice reads it */ }
   clearTimeout(timer);
   if (current.stopped || !ttsAlerts.enabled) return;
+  if (clip && clip.muted) return;  // every channel in it is set to "ignore alerts"
   if (clip && clip.audio_url) {
     const ok = await playClipAndWait(clip, severity, ctx.nodeIds || [], onStop);
     if (ok || current.stopped) return;
@@ -843,6 +844,10 @@ ttsAlerts.evaluateAllFinalNodes = function () {
       const key = `${n.id}|${url || ""}`;
       const channel = getFinalChannelName(n.id, url);
       const serverName = getNodeServer(n.id, url);
+      if (typeof isCardMuted === "function" && isCardMuted(n.id, url)) {
+        delete ttsAlerts.state[key];  // ignored channel: no alert now, and no "wapas aa gaya" when it is unmuted
+        continue;
+      }
       const alertObj = (typeof cardAlert === "function") ? cardAlert(n.id, url) : null;
       const last = ttsAlerts.state[key] || {
         severity: "NONE",

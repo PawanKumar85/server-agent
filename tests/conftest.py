@@ -21,6 +21,7 @@ os.environ["APP_LOGIN_EMAIL"] = TEST_LOGIN["email"]
 os.environ["APP_LOGIN_PASSWORD"] = TEST_LOGIN["password"]
 os.environ["APP_SECRET_KEY"] = "test-secret-key"
 os.environ["ALERT_CONSECUTIVE_THRESHOLD"] = "1"
+os.environ.setdefault("CHATBOT_RERANKER", "0")  # no model download in tests (hybrid_search has its own tests)
 os.environ["METRICS_DB"] = str(Path(__import__("tempfile").mkdtemp()) / "metrics.db")  # never the real history
 load_dotenv(ROOT / ".env")
 

@@ -7,8 +7,13 @@ Eliminates the need to maintain a single monolithic tools class.
 
 from __future__ import annotations
 
+import json
+import logging
 from abc import ABC, abstractmethod
 from typing import Any, Dict, Iterator, List, Optional, Type
+
+logger = logging.getLogger("tools_registry")
+
 
 
 class BaseChatTool(ABC):
@@ -192,4 +197,33 @@ try:
     import geo_cdn_tool  # Registers recommend_cdn_placement and get_server_geo_matrix
 except Exception:
     pass
+
+
+class MCPChatToolAdapter(BaseChatTool):
+    """Bridge adapter allowing the ChatBot Agent to seamlessly call MCP tools."""
+
+    def __init__(self, mcp_tool: Any) -> None:
+        self._tool = mcp_tool
+        self.name = mcp_tool.name
+        self.description = mcp_tool.description
+        self.category = f"MCP ({mcp_tool.category})"
+        self.icon = mcp_tool.icon
+        self.prompt_example = f"Call {mcp_tool.name}"
+        self.parameters = mcp_tool.parameters
+
+    def execute(self, executor: Any, args: dict) -> Iterator[dict]:
+        res = self._tool.execute(args)
+        md = f"### {self._tool.icon} MCP Tool Executed: `{self.name}`\n\n"
+        md += f"**Provider:** {self._tool.provider}\n\n"
+        md += "```json\n" + json.dumps(res, indent=2) + "\n```"
+        yield {"type": "token", "text": md}
+
+
+try:
+    from mcp_server import mcp_server
+    for tool_inst in mcp_server._tools.values():
+        ChatToolRegistry.register_instance(MCPChatToolAdapter(tool_inst))
+except Exception as e:
+    logger.warning(f"Failed to auto-register MCP tools into ChatToolRegistry: {e}")
+
 

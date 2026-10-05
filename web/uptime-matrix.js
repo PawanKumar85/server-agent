@@ -222,6 +222,7 @@ function renderUptimeMatrix(containerId = "matrix-grid", isModal = false, filter
     const history = matrixHistory.get(n.id) || [];
     const isDown = n.status === "DOWN" || (n.consecutiveFailures || 0) > 0;
     const latestLatency = lastSlot(history) ? lastSlot(history).latencyMs : (n.latencyMs || null);
+    const isOrigin = (typeof nodeAlerts !== "undefined" && (nodeAlerts.groups || []).some(g => g.ranking?.[0]?.node === n.id)) || (typeof G !== "undefined" && (G.spiders || []).some(s => s.status === "STOPPED" && s.at === n.id));
 
     return {
       id: n.id,
@@ -232,6 +233,7 @@ function renderUptimeMatrix(containerId = "matrix-grid", isModal = false, filter
       displayRole,
       primaryRole,
       status: isDown ? "DOWN" : "UP",
+      isOrigin,
       history,
       latestLatency,
       isChild: !!stageInfo,
@@ -412,6 +414,7 @@ function renderUptimeMatrix(containerId = "matrix-grid", isModal = false, filter
             <span class="matrix-stage-icon">${r.stageIcon}</span>
             <span class="dot ${isOk ? 'ok' : 'fail'}"></span>
             <span class="matrix-row-title">${esc(r.title)}</span>
+            ${r.isOrigin ? `<span class="matrix-origin-badge" title="Origin of Failure (Problem started here)">🚨 Origin</span>` : ""}
             <span class="matrix-row-role role-${esc(r.primaryRole)}" title="${esc(r.role)}">${esc(r.displayRole)}</span>
           </div>
           <div class="matrix-blocks">${blocksHtml}</div>
@@ -452,6 +455,7 @@ function renderUptimeMatrix(containerId = "matrix-grid", isModal = false, filter
         <div class="matrix-row-info">
           <span class="dot ${isOk ? 'ok' : 'fail'}"></span>
           <span class="matrix-row-title">${esc(r.title)}</span>
+          ${r.isOrigin ? `<span class="matrix-origin-badge" title="Origin of Failure (Problem started here)">🚨 Origin</span>` : ""}
           <span class="matrix-row-role role-${esc(r.primaryRole)}" title="${esc(r.role)}">${esc(r.displayRole)}</span>
         </div>
         <div class="matrix-blocks">${blocksHtml}</div>

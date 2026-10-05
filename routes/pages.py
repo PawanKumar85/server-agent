@@ -54,12 +54,14 @@ def logout():
 @router.get("/relationships")
 @router.get("/agent")
 @router.get("/agent/tools")
+@router.get("/agent/mcp_tools")
 @router.get("/agent/skills")
 @router.get("/learning")
 @router.get("/notifications")
 @router.get("/notifications/email")
 @router.get("/notifications/whatsapp")
 @router.get("/notifications/sms")
+@router.get("/datapool")
 def index():
     """index.html with each asset URL stamped by its modification time, so browsers never run stale CSS/JS."""
     html = (srv.WEB / "index.html").read_text()

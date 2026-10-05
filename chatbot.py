@@ -499,7 +499,11 @@ class ChatBot:
         self.key_pool = KeyPool()
         self._embedder = embedder
         self._embedder_lock = threading.Lock()
-        self.graph = GraphRAG(driver, lambda texts: self.embedder.encode(texts))
+        from hybrid_search import HybridSearch, Reranker
+        self.graph = GraphRAG(driver, lambda texts: self.embedder.encode(texts),
+                              hybrid=HybridSearch(lambda texts: self.embedder.encode(texts),
+                                                  Reranker(cache_dir=os.environ.get("FASTEMBED_CACHE_PATH"))
+                                                  if os.environ.get("CHATBOT_RERANKER", "1") != "0" else None))
         self.metrics = None  # metrics.Metrics, set by the server: anomalies for the analysis
         self.learning = None  # learning.Learner, set by the server: memory of past outages, facts and feedback
         # () -> {"ranking": [...groups], "warnings": [...]}, set by the server; shown in the overview
@@ -533,6 +537,7 @@ class ChatBot:
             "provider": "OpenRouter",
             "keyPool": self.key_pool.status(),
             "langsmith": get_langsmith_status(),
+            "embeddingCache": _embedding_cache_stats(),
         }
         if not self.api_key():
             return {**info, "configured": False, "problem": "Add OPENROUTER_API_KEY to .env and restart."}
@@ -561,6 +566,13 @@ class ChatBot:
         memory = self.memory_document(query, snap)
         if memory:
             results.insert(1, {"document": memory, "score": 1.0, "via": "memory"})
+        if os.environ.get("CHATBOT_COMPRESS", "1") != "0":
+            # Token-efficient RAG: no repeated facts, only the lines that bear on the question (context_compress.py)
+            from context_compress import compress
+            from graphrag import link_entities
+            ent = link_entities(query, snap)
+            names = list(ent["servers"]) + [d.split(".")[0] for d in ent["servers"]] + list(ent["channels"])
+            results, self.last_compression = compress(query, results, names)
         return results, live
 
     def memory_document(self, query: str, snap: "Snapshot") -> Optional[dict]:
@@ -896,6 +908,15 @@ def resolve_report_target(snap: "Snapshot", target: str) -> dict:
     if partial:
         return {"problem": f"'{target}' matches several servers: {', '.join(partial)}. Which one?"}
     return {"problem": f"I can't find a server or channel called '{target}'. Servers: {', '.join(domains)}."}
+
+
+def _embedding_cache_stats() -> Optional[dict]:
+    """How many embeddings the SHA-1 fingerprint cache saved (text_embedding.py)."""
+    try:
+        import text_embedding
+        return text_embedding.cache_stats()
+    except Exception:
+        return None
 
 
 def first_line(text: str) -> str:

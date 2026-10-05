@@ -34,6 +34,26 @@ def _safe_json(val: Any, default: Any = None) -> Any:
         return default if default is not None else {}
 
 
+def _format_ts(val: Any) -> Optional[str]:
+    if val is None:
+        return None
+    if hasattr(val, "isoformat"):
+        return val.isoformat()
+    if hasattr(val, "iso_format"):
+        return val.iso_format()
+    if hasattr(val, "to_native"):
+        try:
+            return val.to_native().isoformat()
+        except Exception:
+            pass
+    if isinstance(val, dict):
+        if "formatted" in val:
+            return str(val["formatted"])
+        if "year" in val and "month" in val and "day" in val:
+            return f"{val['year']:04d}-{val['month']:02d}-{val['day']:02d}T{val.get('hour',0):02d}:{val.get('minute',0):02d}:{val.get('second',0):02d}Z"
+    return str(val)
+
+
 class TelemetryDataPool:
     """Thread-safe in-memory cache for node telemetry, channels, and topology."""
 
@@ -175,12 +195,19 @@ class TelemetryDataPool:
             raw_health = _safe_json(p.get("urlHealth"), default={})
             labels = list(r["labels"])
 
+            sanitized_p = {}
+            for k, v in p.items():
+                if hasattr(v, "isoformat") or hasattr(v, "to_native"):
+                    sanitized_p[k] = _format_ts(v)
+                else:
+                    sanitized_p[k] = v
+
             node_entry = {
                 "domain": domain,
                 "labels": labels,
                 "server_ip": p.get("server_ip"),
                 "status": p.get("status", "UNKNOWN"),
-                "lastPing": p.get("lastPing"),
+                "lastPing": _format_ts(p.get("lastPing")),
                 "lastLatencyMs": p.get("lastLatencyMs"),
                 "lastPacketLoss": p.get("lastPacketLoss"),
                 "consecutiveFailures": p.get("consecutiveFailures", 0),
@@ -194,7 +221,7 @@ class TelemetryDataPool:
                 "discontinuities": p.get("discontinuities"),
                 "links": raw_links,
                 "urlHealth": raw_health,
-                "raw_properties": p,
+                "raw_properties": sanitized_p,
             }
             new_nodes[domain] = node_entry
 

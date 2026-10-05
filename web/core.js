@@ -117,9 +117,11 @@ const VIEW_ROUTES = {
   relationships: "/relationships",
   agent: "/agent",
   tools: "/agent/tools",
+  mcp_tools: "/agent/mcp_tools",
   skills: "/agent/skills",
   learning: "/learning",
-  notifications: "/notifications"
+  notifications: "/notifications",
+  datapool: "/datapool"
 };
 const ROUTE_VIEWS = {
   "/": "workflow",
@@ -130,12 +132,14 @@ const ROUTE_VIEWS = {
   "/agent": "agent",
   "/agent/": "agent",
   "/agent/tools": "tools",
+  "/agent/mcp_tools": "mcp_tools",
   "/agent/skills": "skills",
   "/learning": "learning",
   "/notifications": "notifications",
   "/notifications/email": "notifications",
   "/notifications/whatsapp": "notifications",
   "/notifications/sms": "notifications",
+  "/datapool": "datapool",
   "/chat": "agent"
 };
 const TITLES = {
@@ -146,14 +150,16 @@ const TITLES = {
   relationships: "Relationships",
   agent: "Agent",
   tools: "Agent Tools",
+  mcp_tools: "Model Context Protocol (MCP) Tools",
   skills: "Agent Skills",
   learning: "Learning",
-  notifications: "Notifications"
+  notifications: "Notifications",
+  datapool: "Data Pool Library"
 };
 
 function showView(name, pushState = true) {
   if (name === "chat") name = "agent";
-  $$(".nav-item").forEach(b => b.classList.toggle("active", b.dataset.view === name || ((name === "tools" || name === "skills") && b.dataset.view === "agent")));
+  $$(".nav-item").forEach(b => b.classList.toggle("active", b.dataset.view === name || ((name === "tools" || name === "skills" || name === "mcp_tools") && b.dataset.view === "agent")));
   $$(".agent-subnav-tab").forEach(b => b.classList.toggle("active", b.dataset.subview === name));
   $$(".view").forEach(v => v.classList.toggle("active", v.id === `view-${name}` || (name === "agent" && v.id === "view-chat")));
   $("#view-title").textContent = TITLES[name] || name;
@@ -164,10 +170,12 @@ function showView(name, pushState = true) {
   if (name === "agent" && typeof openChat === "function") openChat();
   if (name === "agent" && typeof renderAgent === "function") { renderAgent(); refreshAgentSignals(); }
   if (name === "tools" && typeof loadTools === "function") loadTools();
+  if (name === "mcp_tools" && typeof loadMcpTools === "function") loadMcpTools();
   if (name === "skills" && typeof loadSkills === "function") loadSkills();
   if (name === "learning" && typeof loadLearning === "function") loadLearning();
   if (name === "servers" && typeof loadServers === "function") loadServers();
   if (name === "notifications" && typeof loadNotifications === "function") loadNotifications();
+  if (name === "datapool" && typeof loadDataPool === "function") loadDataPool();
   const notifSublist = $("#nav-notif-subitems");
   if (notifSublist) notifSublist.hidden = name !== "notifications";
   store.set("view", name);
@@ -199,3 +207,43 @@ document.addEventListener("click", e => {
     return;
   }
 });
+
+// ---------- Stream Stability & Flapping Analyzer ----------
+function analyzeNodeStability(n) {
+  if (!n) return null;
+  const log = n.log || [];
+  const outages = log.filter(l => l.type === "OUTAGE" || l.type === "ESCALATED");
+  const recoveries = log.filter(l => l.type === "RECOVERY");
+  const blipCount = n.blipCount || 0;
+
+  const isFlapper = (outages.length >= 2 && recoveries.length >= 1) || (outages.length >= 1 && recoveries.length >= 2) || (blipCount >= 4);
+  if (!isFlapper) return null;
+
+  const durations = recoveries.map(r => r.durationS).filter(d => typeof d === "number" && d > 0);
+  const avgDuration = durations.length ? Math.round(durations.reduce((a, b) => a + b, 0) / durations.length) : (blipCount ? 15 : null);
+  const minDuration = durations.length ? Math.min(...durations) : 8;
+  const maxDuration = durations.length ? Math.max(...durations) : 35;
+
+  const categories = Array.from(new Set(outages.map(o => o.category).filter(Boolean)));
+  const isStaleMedia = categories.includes("STALE_MEDIA") || categories.includes("NO_SEGMENTS") || outages.some(o => (o.lastError || "").includes("STALE_SEGMENTS"));
+
+  const labels = n.labels || [];
+  const isBackup = labels.includes("BackupLink") && !labels.includes("MainInput");
+  const multiUrlOutage = outages.some(o => /^[2-9]\/\d+ URLs failing/.test(o.lastError || "") || (o.lastError || "").includes("2/2 URLs failing"));
+
+  return {
+    isFlapping: true,
+    dropCount: outages.length || blipCount,
+    recoveryCount: recoveries.length,
+    avgDuration: avgDuration || 18,
+    minDuration,
+    maxDuration,
+    isStaleMedia,
+    isBackup,
+    multiUrlOutage,
+    categories,
+    lastOutageAt: outages[outages.length - 1]?.timestamp,
+  };
+}
+window.analyzeNodeStability = analyzeNodeStability;
+

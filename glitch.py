@@ -54,7 +54,13 @@ KIND_WORDS = {
     "DISCONTINUITY": "stream restarted or switched", "SEGMENT_LENGTH": "uneven segment length",
     "SEGMENT_MISSING": "segment missing", "SLOW_DELIVERY": "too slow for full quality",
     "QUALITY_DROPPED": "a quality level disappeared",
+    "AUDIO_MISSING": "audio missing (picture without sound)", "VIDEO_MISSING": "video missing (sound without picture)",
+    "AUDIO_GAP": "audio cutting out", "AV_DESYNC": "audio and video out of sync",
 }
+# Inside the delivered segment (ts_inspect.py): audio and video are muxed together, so only the segment can tell.
+AV_DESYNC_MS = 500  # healthy streams here are within ~100 ms
+AUDIO_GAP_SHARE = 0.5  # audio covering less than half of the video's time in a segment
+AV_STREAK = 2  # seen in this many delivered segments in a row before it counts (an ad splice can be odd once)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS glitches (
@@ -189,8 +195,10 @@ class GlitchProbe:
                 if resp.status_code in (404, 410):
                     glitch("SEGMENT_MISSING", resp.status_code, f"newest segment HTTP {resp.status_code}")
                 else:
-                    size = sum(len(chunk) for chunk in resp.iter_bytes())
+                    body = b"".join(resp.iter_bytes())
+                    size = len(body)
                     t2 = time.monotonic()
+                    self._check_av(body, st, glitch, features)
                     ttfb, transfer = t1 - t0, max(t2 - t1, 1e-3)
                     rate = size / transfer  # bytes per second once data flows
                     features["ttfb_ms"] = round(ttfb * 1000)
@@ -208,6 +216,37 @@ class GlitchProbe:
         if st.pop("first", False):
             found.pop("QUALITY_DROPPED", None)  # nothing to compare with on the very first probe
         return self._finish(url, node, channel, now, found, features)
+
+    @staticmethod
+    def _check_av(body: bytes, st: dict, glitch, features: dict) -> None:
+        """Audio and video inside the segment: present, covering the segment, in sync. Each problem must repeat
+        AV_STREAK times before it is a glitch; "missing" only for a track this stream had before."""
+        try:
+            from ts_inspect import inspect
+            av = inspect(body)
+        except Exception:
+            return
+        if not av["ts"]:
+            return  # fMP4 or something else: not inspected
+        features["audio_s"], features["video_s"], features["av_drift_ms"] = av["audio_s"], av["video_s"], av["drift_ms"]
+        st["had_audio"] = st.get("had_audio", False) or av["audio"]
+        st["had_video"] = st.get("had_video", False) or av["video"]
+        problems = {}
+        if av["video"] and not av["audio"] and st["had_audio"]:
+            problems["AUDIO_MISSING"] = (None, "the newest segment has video but no audio track data")
+        elif av["audio"] and not av["video"] and st["had_video"]:
+            problems["VIDEO_MISSING"] = (None, "the newest segment has audio but no video")
+        elif av["video"] and av["audio"]:
+            if av["video_s"] > 1 and av["audio_s"] < AUDIO_GAP_SHARE * av["video_s"]:
+                problems["AUDIO_GAP"] = (av["audio_s"], f"audio covers {av['audio_s']:.1f} s of a {av['video_s']:.1f} s segment")
+            if av["drift_ms"] is not None and abs(av["drift_ms"]) > AV_DESYNC_MS:
+                problems["AV_DESYNC"] = (av["drift_ms"], f"sound is {abs(av['drift_ms']) / 1000:.1f} s "
+                                                         f"{'behind' if av['drift_ms'] > 0 else 'ahead of'} the picture")
+        streaks = st.setdefault("av_streak", {})
+        for kind in ("AUDIO_MISSING", "VIDEO_MISSING", "AUDIO_GAP", "AV_DESYNC"):
+            streaks[kind] = streaks.get(kind, 0) + 1 if kind in problems else 0
+            if streaks[kind] >= AV_STREAK:
+                glitch(kind, *problems[kind])
 
     def _finish(self, url, node, channel, now, found, features, delivered: bool = True) -> dict:
         events = [{"ts": now, "node": node, "url": url, "channel": channel, **g} for g in found.values()]
