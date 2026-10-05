@@ -16,3 +16,4 @@ fastembed==0.7.4
 langsmith>=0.1.0
 soundfile==0.13.1  # lossless FLAC for stored voice clips
 piper-tts==1.8.0  # local neural Hindi voice for alerts (voice_neural.py), no API calls
+python-socketio==5.13.0  # Node Agent telemetry endpoint (agent_hub.py)

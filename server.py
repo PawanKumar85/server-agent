@@ -899,3 +899,8 @@ from routes import channels, chat, diagnostics, learning, monitor, notifications
 for _module in (pages, monitor, diagnostics, reports, chat, skills, learning, notifications, voice_routes, channels):
     app.include_router(_module.router)
 
+# Node Agents (../Node_Agent) connect at /socket.io with their own token: server telemetry from inside each server.
+import agent_hub  # noqa: E402
+
+agent_hub.install(app)
+

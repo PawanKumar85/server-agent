@@ -71,6 +71,8 @@ services:
       CHATBOT_MODEL: ${CHATBOT_MODEL:-qwen/qwen3.8-27b}
       # Voice alerts: who the alerts address (the phrases are pre-recorded; no API calls)
       VOICE_OPERATOR_NAME: ${VOICE_OPERATOR_NAME:-Anushrav}
+      # Node Agents: comma-separated tokens they may connect with (empty: no agent can connect)
+      AGENT_TOKENS: ${AGENT_TOKENS:-}
       RCA_MODEL: ${RCA_MODEL:-}   # empty: same as CHATBOT_MODEL
       HF_HUB_OFFLINE: "1"   # the embedding model is baked into the image
       # LangSmith AI & GraphRAG Tracing (optional)
