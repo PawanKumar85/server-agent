@@ -1912,7 +1912,8 @@ class Tools:
 
     def tool_update_stream_link(self, args: dict, confirmed: bool = False) -> Iterator[dict]:
         """Update an existing stream link's URL, role, or channel with double confirmation."""
-        from nodes import StreamLink, group_by_domain, upsert_nodes
+        from pydantic import ValidationError
+        from nodes import StreamLink
 
         old_url = str(args.get("old_url") or "").strip()
         new_url = str(args.get("new_url") or old_url).strip()
@@ -1948,7 +1949,14 @@ class Tools:
         # Phase 1: Preview & Confirmation Request
         if not confirmed:
             action_id = f"act_{uuid.uuid4().hex[:8]}"
-            summary = f"Update link on `{found_node}` from {found_link.get('role')} ({found_link.get('channel')}) to {updated_role} ({updated_channel})"
+            try:
+                target_node = StreamLink(channel=updated_channel, label=updated_role, url=new_url).node_id
+            except ValidationError as e:
+                yield {"type": "token", "text": f"❌ The new link is not valid: {e.errors()[0]['msg']}\n"}
+                return
+            summary = (f"Update link on `{found_node}` from {found_link.get('role')} ({found_link.get('channel')}) "
+                       f"to {updated_role} ({updated_channel})"
+                       + (f"; it moves to server `{target_node}`" if target_node != found_node else ""))
             PENDING_ACTIONS[action_id] = {
                 "action": "update_stream_link",
                 "title": "Update Stream Link",
@@ -1979,28 +1987,25 @@ class Tools:
             }
             return
 
-        # Phase 2: Execution upon explicit confirmation
-        # If URL changed, remove old URL from node and add new link
-        with self.driver.session() as session:
-            # Fetch links on node, update matching, write back
-            curr_links = load_json_list(session.run("MATCH (n:Domain {domain: $d}) RETURN n.links AS l", d=found_node).single()["l"])
-            filtered = [l for l in curr_links if l.get("url") != old_url]
-            filtered.append({"url": new_url, "role": updated_role, "channel": updated_channel})
-            session.run(
-                "MATCH (n:Domain {domain: $d}) SET n.links = $links",
-                d=found_node,
-                links=json.dumps(filtered),
-            )
-
-        from nodes import connect_new_channels
-        connected = connect_new_channels(self.driver, {updated_channel})
+        # Phase 2: Execution upon explicit confirmation. The link goes to the node of its own server (a new URL on
+        # another host moves there), and the channel's edges follow it.
+        from nodes import move_link
+        try:
+            new_link = StreamLink(channel=updated_channel, label=updated_role, url=new_url)
+            moved = move_link(self.driver, old_url, new_link)
+        except (ValidationError, ValueError) as e:
+            yield {"type": "token", "text": f"❌ Could not update the link: {e}\n"}
+            return
         telemetry_pool.invalidate()
+        where = (f"Moved it from `{moved['from']}` to `{moved['to']}`." if moved["from"] != moved["to"]
+                 else f"Updated it on `{moved['to']}`.")
         yield {
             "type": "token",
-            "text": f"✓ **Stream Link Updated Successfully!**\n\n"
-                    f"Updated link on node `{found_node}` to channel `{updated_channel}` ({updated_role}).\n"
-                    + ("Connected it into the pipeline:\n" + "".join(f"- `{e.source}` {e.type} `{e.target}`\n" for e in connected)
-                       if connected else "")
+            "text": f"✓ **Stream Link Updated Successfully!**\n\n{where} Channel `{updated_channel}` ({updated_role}).\n"
+                    + ("Removed old connections:\n" + "".join(f"- `{e.source}` {e.type} `{e.target}`\n" for e in moved["removed"])
+                       if moved["removed"] else "")
+                    + ("Connected it into the pipeline:\n" + "".join(f"- `{e.source}` {e.type} `{e.target}`\n" for e in moved["added"])
+                       if moved["added"] else "")
         }
 
     def tool_delete_node(self, args: dict, confirmed: bool = False) -> Iterator[dict]:

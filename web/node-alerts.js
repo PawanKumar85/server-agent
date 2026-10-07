@@ -77,11 +77,64 @@ async function setChannelMute(channel, muted, note = null) {
 loadChannelMutes();
 setInterval(loadChannelMutes, 30000);  // another operator may change it
 
+// --- Confirmation by the Node Agent (agent_hub.py): a server running an agent is asked before an outage is called ---
+const agentChecks = {};  // server -> {agent, state: "fresh" | "lost", ago, hlsUrl, hlsStatus, hlsAge, hostProblem}
+
+async function loadAgentChecks() {
+  try {
+    const res = await fetch("/api/agents/checks");
+    if (!res.ok) return;
+    const data = await res.json();
+    Object.keys(agentChecks).forEach(k => delete agentChecks[k]);
+    Object.assign(agentChecks, data.checks || {});
+  } catch (_) { /* no agents: alerts behave as before */ }
+}
+loadAgentChecks();
+setInterval(loadAgentChecks, 10000);
+
+// The server's agent says: "confirms" (it sees the problem too, or went silent with it), "contradicts" (it watches
+// the failing stream from inside and it plays fine: the fault is on the way, not on the server), or null (no agent,
+// or it can't tell). A channel card "<host>/<channel>" asks its host's agent.
+function agentVerdict(nodeId, url) {
+  const a = agentChecks[nodeId] || agentChecks[String(nodeId).split("/")[0]];
+  if (!a) return null;
+  const who = `Node agent ${a.agent}`;
+  if (a.state === "lost") {
+    return {verdict: "confirms", text: `${who} on the server is silent too${a.ago != null ? ` (${alertSince(new Date(Date.now() - a.ago * 1000).toISOString())})` : ""}.`};
+  }
+  if (a.hostProblem) return {verdict: "confirms", text: `Confirmed from inside the server: ${a.hostProblem}.`};
+  const n = byId[nodeId];
+  const failingUrls = url ? [url] : Object.entries((n && n.urlHealth) || {}).filter(([, h]) => h.up === false).map(([u]) => u);
+  if (!a.hlsUrl || !failingUrls.includes(a.hlsUrl)) return null;  // it watches another stream: no say on this one
+  const age = a.hlsAge != null ? ` (newest piece ${Math.round(a.hlsAge)} s old)` : "";
+  if (["STALE", "DOWN", "DEGRADED"].includes(a.hlsStatus)) {
+    return {verdict: "confirms", text: `${who} sees it from inside too: ${a.hlsStatus.toLowerCase()}${age}.`};
+  }
+  if (a.hlsStatus === "FRESH") {
+    return {verdict: "contradicts", text: `${who} watches this stream on the server and it is playing${age}: ` +
+                                          "likely the network or CDN path, not the server."};
+  }
+  return null;
+}
+window.agentVerdict = agentVerdict;
+
+// An outage ("down") is only called when the server's agent, if it has one, doesn't see the stream playing.
+function confirmWithAgent(nodeId, url, alert) {
+  if (!alert || alert.tone !== "down") return alert;
+  const v = agentVerdict(nodeId, url);
+  if (!v) return alert;
+  if (v.verdict === "contradicts") {
+    return {tone: "warn", title: "Not confirmed by the server", text: `${alert.title}, seen from outside only. ${v.text}`,
+            pill: "⚠ outside only", key: `agent-unconfirmed-${nodeId}`, since: alert.since, agent: v};
+  }
+  return {...alert, text: `${alert.text} ${v.text}`.trim(), tag: alert.tag || "Confirmed by agent", agent: v};
+}
+
 // The alert for a card: the whole server, or (url) one channel's Final card. null when there's nothing to say,
 // or when the operator chose to ignore this channel's alerts.
 function cardAlert(nodeId, url) {
   if (isCardMuted(nodeId, url)) return null;
-  return cardAlertRaw(nodeId, url);
+  return confirmWithAgent(nodeId, url, cardAlertRaw(nodeId, url));
 }
 
 function cardAlertRaw(nodeId, url) {
@@ -252,6 +305,8 @@ function getConfirmedOrigins() {
     const ageS = onsetMs ? Math.max(0, Math.round((now - onsetMs) / 1000)) : 0;
     if (ageS < 60) continue; // Sustained for >= 1 minute
 
+    if ((agentVerdict(top.node) || {}).verdict === "contradicts") continue;  // the server sees its stream fine
+
     if (!seenNodes.has(top.node)) {
       seenNodes.add(top.node);
       origins.push({
@@ -280,6 +335,7 @@ function getConfirmedOrigins() {
 
       const victims = [s.finalLinkId].filter(f => f && f !== s.at);
       if (isBackupOnly && victims.length === 0) continue;
+      if ((agentVerdict(s.at) || {}).verdict === "contradicts") continue;
 
       seenNodes.add(s.at);
       origins.push({
@@ -311,6 +367,7 @@ function getConfirmedOrigins() {
         const ageS = onsetMs ? Math.max(0, Math.round((now - onsetMs) / 1000)) : 0;
 
         if (ageS < 60) continue;
+        if ((agentVerdict(n.id) || {}).verdict === "contradicts") continue;
 
         seenNodes.add(n.id);
         origins.push({
@@ -400,6 +457,47 @@ function renderNodeAlerts() {
   }
 }
 
+// The banner in words anyone can act on: which channels are off air, what broke where, and what to do.
+function channelOf(id) {
+  const s = String(id || "");
+  return s.includes("/") ? s.split("/").pop() : null;
+}
+
+function plainOutage(orig) {
+  const n = byId[orig.node] || {};
+  const server = alertShort(orig.node);
+  const failing = Object.entries(n.urlHealth || {}).filter(([, h]) => h.up === false);
+  const linkChannel = url => ((n.links || []).find(l => l.url === url) || {}).channel || channelOf(String(url).replace(/\/[^/]*$/, ""));
+  const failingChannels = [...new Set(failing.map(([u]) => linkChannel(u)).filter(Boolean))];
+  const offAir = [...new Set((orig.victims || []).map(channelOf).filter(Boolean))];
+  const channels = offAir.length ? offAir : failingChannels.length ? failingChannels : [channelOf(orig.node) || server];
+  const feed = failingChannels.length ? failingChannels.join(", ") : channels.join(", ");
+  const h = (failing[0] || [])[1] || {};
+  const detail = `${h.detail || ""} ${h.category || ""} ${h.freshness || ""} ${(orig.reasons || []).join(" ")}`;
+
+  let problem, fix;
+  if (/\b404\b|PLAYLIST_MISSING/.test(detail)) {
+    problem = `The ${feed} stream is missing on the ${server} server.`;
+    fix = `Restart the encoder that sends ${feed} to ${server}.`;
+  } else if (/STALE|NO_SEGMENTS|0\/\d+ variants live/.test(detail)) {
+    problem = `The ${feed} video is frozen on the ${server} server (no new video coming in).`;
+    fix = `Check the encoder sending ${feed} to ${server}: it is connected but stopped sending video.`;
+  } else if (/UNREACHABLE|timeout|CONNECT/i.test(detail) || n.status === "DOWN" && !failing.length) {
+    problem = `The ${server} server is not reachable.`;
+    fix = `Check that ${server} is switched on and its internet is working.`;
+  } else if (/\b5\d\d\b|SERVER_ERROR/.test(detail)) {
+    problem = `The ${server} server is giving errors for ${feed}.`;
+    fix = `Restart the streaming service on ${server}.`;
+  } else {
+    problem = `The ${feed} stream on the ${server} server is not working.`;
+    fix = `Open ${server} (Show server) and check the stream.`;
+  }
+  const v = typeof agentVerdict === "function" ? agentVerdict(orig.node) : null;
+  if (v && v.verdict === "confirms") problem += " " + v.text;
+  const since = orig.onsetAt ? alertSince(orig.onsetAt) : `${Math.max(1, Math.round(orig.durationS / 60))} min`;
+  return {channels: channels.join(", "), problem, fix, since};
+}
+
 function renderOriginBanner() {
   const banner = $("#rca-origin-banner");
   if (!banner) return;
@@ -414,36 +512,29 @@ function renderOriginBanner() {
 
   banner.hidden = false;
   banner.innerHTML = origins.map(orig => {
-    const roleClass = `role-${orig.role}`;
-    const timeAgo = orig.onsetAt ? alertSince(orig.onsetAt) : `${Math.round(orig.durationS / 60)} min`;
-    const reasonText = (orig.reasons && orig.reasons.length) ? orig.reasons.join(" · ") : "Service interruption";
-    const victimSummary = orig.victims.length
-      ? `${orig.victims.length} downstream server${orig.victims.length > 1 ? "s" : ""} failing: ${orig.victims.map(alertShort).join(", ")}`
-      : "Primary broadcast stream disrupted";
-
+    const p = plainOutage(orig);
+    const technical = (orig.reasons || []).join(" · ");
     return `
       <div class="origin-banner-item" data-origin="${esc(orig.node)}">
-        <div class="origin-badge-col">
-          <span class="origin-alert-pill">🚨 CONFIRMED ORIGIN</span>
-          <span class="origin-server-role chip ${roleClass}" style="background:var(--${esc(orig.role)}, #ef4444)">${esc(orig.role)}</span>
-        </div>
         <div class="origin-main-col">
           <div class="origin-header-line">
-            <span class="origin-domain-name" title="${esc(orig.node)}">${esc(orig.node)}</span>
-            <span class="origin-time-badge" title="Monitored & sustained for ${esc(orig.durationS)}s">⏱️ Confirmed (${esc(timeAgo)} sustained)</span>
+            <span class="origin-alert-pill">🔴 OFF AIR</span>
+            <span class="origin-domain-name">${esc(p.channels)}</span>
+            <span class="origin-time-badge">down for ${esc(p.since)}</span>
           </div>
           <div class="origin-reason-line">
-            <span class="origin-cause-label">Verified Root Cause:</span>
-            <span class="origin-cause-val">${esc(reasonText)}</span>
+            <span class="origin-cause-label">Problem:</span>
+            <span class="origin-cause-val">${esc(p.problem)}</span>
           </div>
           <div class="origin-victim-line">
-            <span class="origin-victim-label">Service Impact:</span>
-            <span class="origin-victim-val">⚠️ ${esc(victimSummary)}</span>
+            <span class="origin-victim-label">What to do:</span>
+            <span class="origin-victim-val">${esc(p.fix)}</span>
           </div>
+          ${technical ? `<details class="origin-details"><summary>Details</summary>${esc(technical)}</details>` : ""}
         </div>
         <div class="origin-action-col">
-          <button type="button" class="btn small origin-jump-btn" data-locate="${esc(orig.node)}" title="Center and inspect this server">
-            🎯 Locate Server
+          <button type="button" class="btn small origin-jump-btn" data-locate="${esc(orig.node)}" title="Show this server on the map">
+            Show server
           </button>
         </div>
       </div>

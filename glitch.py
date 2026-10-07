@@ -22,7 +22,6 @@ days), which upstream failures usually come before its glitches (lift over the b
 cluster in, and the delivery margin trend combine into a "glitch risk in the next 10 minutes" with its reasons.
 """
 
-import bisect
 import os
 import sqlite3
 import statistics
@@ -34,6 +33,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import httpx
 import m3u8
+import numpy as np
 
 import scte
 
@@ -311,24 +311,40 @@ def _hourly_counts(db, url: str, start: float, now: float) -> Dict[int, int]:
     return counts
 
 
-def lead_patterns(db, url: str, upstream: List[str], start: float) -> List[dict]:
+def _timestamps(db, sql: str, args: tuple) -> np.ndarray:
+    return np.fromiter((r[0] for r in db.execute(sql, args)), dtype=np.float64)
+
+
+def _preceded_share(ts: np.ndarray, fails: np.ndarray) -> float:
+    """Share of `ts` with a failure in `fails` (sorted) at most LEAD_WINDOW_S before it: one vectorised binary
+    search for all of them (the latest failure at or before each t), O(n log m) in C instead of a Python loop."""
+    i = np.searchsorted(fails, ts, side="right")
+    before = fails[np.maximum(i - 1, 0)]
+    return float(np.count_nonzero((i > 0) & (ts - before <= LEAD_WINDOW_S))) / len(ts)
+
+
+def lead_patterns(db, url: str, upstream: List[str], start: float,
+                  fails_cache: Optional[Dict[str, np.ndarray]] = None) -> List[dict]:
     """Which upstream server's failed checks tend to come within LEAD_WINDOW_S before this Final's glitches:
-    how often they did (hit rate) against how often they do before any probe at all (base rate)."""
-    glitch_ts = [r[0] for r in db.execute("SELECT ts FROM glitches WHERE url = ? AND ts >= ?", (url, start))]
-    probe_ts = [r[0] for r in db.execute("SELECT ts FROM glitch_probes WHERE url = ? AND ts >= ?", (url, start))]
-    if len(glitch_ts) < 5 or not probe_ts:
+    how often they did (hit rate) against how often they do before any probe at all (base rate).
+    fails_cache: node -> its sorted failure times, shared across the Finals of one forecast (servers feed many)."""
+    glitch_ts = _timestamps(db, "SELECT ts FROM glitches WHERE url = ? AND ts >= ?", (url, start))
+    if len(glitch_ts) < 5:
         return []
+    probe_ts = _timestamps(db, "SELECT ts FROM glitch_probes WHERE url = ? AND ts >= ?", (url, start))
+    if not len(probe_ts):
+        return []
+    cache = fails_cache if fails_cache is not None else {}
     out = []
     for node in upstream:
-        fails = sorted(r[0] for r in db.execute("SELECT ts FROM node_checks WHERE node = ? AND ts >= ? AND fails > 0",
-                                                (node, start - LEAD_WINDOW_S)))
-        if not fails:
+        if node not in cache:
+            cache[node] = _timestamps(db, "SELECT ts FROM node_checks WHERE node = ? AND ts >= ? AND fails > 0 "
+                                          "ORDER BY ts", (node, start - LEAD_WINDOW_S))
+        fails = cache[node]
+        if not len(fails):
             continue
-        def preceded(t: float) -> bool:
-            i = bisect.bisect_right(fails, t)
-            return i > 0 and t - fails[i - 1] <= LEAD_WINDOW_S
-        hit = sum(preceded(t) for t in glitch_ts) / len(glitch_ts)
-        base = sum(preceded(t) for t in probe_ts) / len(probe_ts)
+        hit = _preceded_share(glitch_ts, fails)
+        base = _preceded_share(probe_ts, fails)
         if hit >= 0.4 and hit >= 2 * max(base, 0.01):
             out.append({"node": node, "hit": round(hit, 2), "base": round(base, 3),
                         "lift": round(hit / max(base, 0.01), 1), "glitches": len(glitch_ts)})
@@ -344,6 +360,7 @@ def forecast(path: str, finals: List[dict], upstream_of: Callable[[str], List[st
     start = now - BASELINE_DAYS * 86400
     hour_now = int(((now + 19800) % 86400) // 3600)  # IST hour of the day
     out = []
+    fails_cache: Dict[str, np.ndarray] = {}  # each upstream server's failures, read once for every Final it feeds
     db = sqlite3.connect(path, timeout=10)
     db.row_factory = sqlite3.Row
     try:
@@ -365,7 +382,7 @@ def forecast(path: str, finals: List[dict], upstream_of: Callable[[str], List[st
                                                "ORDER BY ts DESC LIMIT 10", (url,))]
             probes = db.execute("SELECT COUNT(*) FROM glitch_probes WHERE url = ?", (url,)).fetchone()[0]
             ups = upstream_of(f["node"])
-            leads = lead_patterns(db, url, ups, start)
+            leads = lead_patterns(db, url, ups, start, fails_cache)
 
             score, reasons = 0.0, []
             if normal is not None and n_hour >= normal + max(3, 4 * (spread or 0)):

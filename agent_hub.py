@@ -31,6 +31,7 @@ from fastapi import APIRouter, HTTPException, Query
 
 TELEMETRY_DAYS = 7
 SNAPSHOT_TIMEOUT_S = 10
+CHECK_FRESH_S = 60  # an agent quiet for longer has lost contact (the server, or its network, may be gone)
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS agent_telemetry (
     ts REAL NOT NULL, agent TEXT NOT NULL, node TEXT, cpu REAL, memory REAL, disk_max REAL, load1 REAL,
@@ -83,6 +84,53 @@ def _graph_domains() -> List[str]:
         "MATCH (n:Domain) WHERE NOT n.domain ENDS WITH '.invalid' RETURN n.domain AS d").records]
 
 
+def _agent_node_map() -> Dict[str, str]:
+    """AGENT_NODE_MAP in .env: 'agent:target,agent2=target2'; a target is a graph domain, a server IP or a channel."""
+    out = {}
+    for pair in os.environ.get("AGENT_NODE_MAP", "").split(","):
+        delim = "=" if "=" in pair else ":" if ":" in pair else None
+        if delim:
+            k, v = pair.split(delim, 1)
+            if k.strip() and v.strip():
+                out[k.strip().lower()] = v.strip().lower()
+    return out
+
+
+def _resolve(key: str) -> Optional[str]:
+    """The one graph server `key` names: a domain or its first label (match_node), else the server whose IP is
+    `key`, else the server carrying the channel `key`. Several servers match (a shared IP, a channel on many
+    servers): None, rather than whichever Neo4j happens to list first."""
+    m = match_node(key, _graph_domains())
+    if m:
+        return m
+    from nodes import load_json_list
+    recs = _srv().driver.execute_query("""
+        MATCH (n:Domain)
+        WHERE NOT n.domain ENDS WITH '.invalid' AND NOT n.domain CONTAINS '/'
+          AND (toLower(coalesce(n.server_ip, '')) = $a OR toLower(coalesce(n.links, '')) CONTAINS $a)
+        RETURN n.domain AS d, n.links AS l, n.server_ip AS ip
+    """, a=key).records
+    by_ip = {r["d"] for r in recs if (r["ip"] or "").lower() == key}
+    if by_ip:
+        return by_ip.pop() if len(by_ip) == 1 else None
+    by_channel = {r["d"] for r in recs for link in load_json_list(r["l"])
+                  if isinstance(link, dict) and str(link.get("channel", "")).strip().lower() == key}
+    return by_channel.pop() if len(by_channel) == 1 else None
+
+
+def _find_node_for_agent(agent_id: str) -> Optional[str]:
+    """The graph server an agent runs on: its AGENT_NODE_MAP target if it has one, else its own id, resolved by
+    _resolve (domain, server IP or channel). A map target that isn't in the graph gives None, never a raw value."""
+    agent = (agent_id or "").strip().lower()
+    if not agent:
+        return None
+    target = _agent_node_map().get(agent, agent)
+    node = _resolve(target)
+    if node is None and target != agent:
+        print(f"[agents] {agent}: AGENT_NODE_MAP target '{target}' is not a single server in the graph")
+    return node
+
+
 def _stream_url(node: Optional[str]) -> Optional[str]:
     """The server's own stream to watch from the inside: its Main input link first, else any link on it."""
     if not node:
@@ -108,7 +156,7 @@ def summarize(snap: dict) -> dict:
         "rx_bps": sum((n.get("rxSec") or 0) for n in nets) * 8,
         "tx_bps": sum((n.get("txSec") or 0) for n in nets) * 8,
         "net_errors": sum((n.get("rxErrors") or 0) + (n.get("txErrors") or 0) for n in nets),
-        "encoders": len(snap.get("encoders") or []),
+        "encoders": len(snap["encoders"]) if isinstance(snap.get("encoders"), list) else None,  # None: not sent
         "hls_status": hls.get("status"),
         "hls_age_s": hls.get("segmentAge"),
     }
@@ -132,6 +180,55 @@ def _store_telemetry(agent: str, node: Optional[str], snap: dict) -> dict:
     return s
 
 
+def _had_encoders(agent: str) -> bool:
+    """The host ran an encoder process in the last day (so none now means one stopped; an edge never has any)."""
+    try:
+        with _db() as db:
+            return bool(db.execute("SELECT 1 FROM agent_telemetry WHERE agent = ? AND encoders > 0 AND ts >= ? LIMIT 1",
+                                   (agent, time.time() - 86400)).fetchone())
+    except Exception:
+        return False
+
+
+def host_problem(s: Optional[dict], had_encoders: bool) -> Optional[str]:
+    """What is wrong on the host itself, in plain words, from an agent's latest numbers; None if nothing."""
+    if not s:
+        return None
+    if s.get("encoders") == 0 and had_encoders:
+        return "no encoder process is running"
+    if (s.get("disk_max") or 0) >= 95:
+        return f"the disk is {round(s['disk_max'])}% full"
+    if (s.get("memory") or 0) >= 95:
+        return f"memory is {round(s['memory'])}% used"
+    if (s.get("cpu") or 0) >= 98:
+        return f"CPU is at {round(s['cpu'])}%"
+    return None
+
+
+def agent_checks(now: Optional[float] = None) -> Dict[str, dict]:
+    """Per graph server, what its Node Agent sees from inside, for confirming an alert seen from outside:
+    state "fresh" (a report in the last CHECK_FRESH_S) or "lost" (disconnected, or silent for longer)."""
+    now = now or time.time()
+    out = {}
+    for agent, v in _online.items():
+        if not v.get("node"):
+            continue
+        ago = now - v["lastAt"] if v.get("lastAt") else None
+        if v.get("sid") and ago is not None and ago <= CHECK_FRESH_S:
+            last = v.get("last") or {}
+            check = {"agent": agent, "state": "fresh", "ago": round(ago, 1), "hlsUrl": v.get("hlsUrl"),
+                     "hlsStatus": last.get("hls_status"), "hlsAge": last.get("hls_age_s"),
+                     "hostProblem": host_problem(last, v.get("hadEncoders", False))}
+        elif v.get("sid") and ago is None:
+            continue  # just connected, nothing reported yet
+        else:
+            since = v.get("offlineSince") if not v.get("sid") else v.get("lastAt")
+            check = {"agent": agent, "state": "lost", "ago": round(now - since, 1) if since else None}
+        if out.get(v["node"], {}).get("state") != "fresh":  # several agents on one server: a live one wins
+            out[v["node"]] = check
+    return out
+
+
 # --- socket.io events -------------------------------------------------------------------------------------------
 
 @sio.event
@@ -143,7 +240,7 @@ async def connect(sid, environ, auth):
         print(f"[agents] refused a connection (agent={agent or '?'}): bad or missing token")
         raise socketio.exceptions.ConnectionRefusedError("unauthorized")
     try:
-        node = await asyncio.to_thread(lambda: match_node(agent, _graph_domains()))
+        node = await asyncio.to_thread(lambda: _find_node_for_agent(agent))
         hls = await asyncio.to_thread(_stream_url, node)
     except Exception as e:  # the graph being unavailable must not keep an agent out
         print(f"[agents] {agent}: graph lookup failed ({type(e).__name__}: {e})")
@@ -151,7 +248,9 @@ async def connect(sid, environ, auth):
     old = _online.get(agent)
     if old and old["sid"] != sid:
         await sio.disconnect(old["sid"])  # the same agent reconnecting: keep only the newest connection
-    _online[agent] = {"sid": sid, "node": node, "since": time.time(), "last": None, "lastAt": None}
+    had = await asyncio.to_thread(_had_encoders, agent)
+    _online[agent] = {"sid": sid, "node": node, "since": time.time(), "last": None, "lastAt": None,
+                      "hlsUrl": hls, "hadEncoders": had}
     await sio.save_session(sid, {"agent": agent, "node": node})
     print(f"[agents] {agent} connected" + (f" as {node}" if node else " (no matching server in the graph)"))
     if hls:
@@ -179,7 +278,12 @@ async def on_telemetry(sid, snap):
     agent, node = session["agent"], session["node"]
     summary = await asyncio.to_thread(_store_telemetry, agent, node, snap)
     if agent in _online:
-        _online[agent]["last"], _online[agent]["lastAt"] = summary, time.time()
+        info = _online[agent]
+        info["last"], info["lastAt"] = summary, time.time()
+        info["hadEncoders"] = info.get("hadEncoders") or bool(summary.get("encoders"))
+        url = (snap.get("hls") or {}).get("url")
+        if url:
+            info["hlsUrl"] = url
 
 
 @sio.on("incident")
@@ -223,6 +327,12 @@ def list_agents():
          "offlineSince": v.get("offlineSince"), "lastTelemetryAgo": round(now - v["lastAt"], 1) if v["lastAt"] else None,
          "latest": v["last"]}
         for a, v in sorted(_online.items())]}
+
+
+@router.get("/api/agents/checks")
+def list_agent_checks():
+    """What each server's agent sees from inside (the dashboard confirms an outage with it before alerting)."""
+    return {"checks": agent_checks(), "freshS": CHECK_FRESH_S}
 
 
 @router.get("/api/agents/{agent}/telemetry")
@@ -273,3 +383,8 @@ def install(app) -> None:
     """Adds the agent endpoint and its API to the FastAPI app (call after every other middleware)."""
     app.include_router(router)
     app.add_middleware(_AgentSocket)
+    try:
+        with _db():
+            pass
+    except Exception as e:
+        print(f"[agents] init db failed: {e}")

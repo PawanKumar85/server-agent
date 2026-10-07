@@ -41,6 +41,9 @@ def fresh_health_caches():
     notifications._announcement_rotation.clear()  # wording rotates per server: start each test at the first line
     health.clear_health_caches()
     spider.clear_spider_caches()
+    server = sys.modules.get("server")
+    if server is not None:
+        server._forecast_cache.update(at=0.0, value=None)  # the glitch forecast is shared for 30 s
     yield
     health.clear_health_caches()
     spider.clear_spider_caches()

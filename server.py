@@ -16,6 +16,7 @@ from chat_store import ChatStore
 import asyncio
 import json
 import os
+import copy
 import threading
 import time
 import uuid
@@ -425,7 +426,22 @@ def train_glitch_model() -> dict:
     return glitch_model.train(metrics.path, final_streams(), lambda n: ups.get(n, []))
 
 
+FORECAST_TTL_S = 30  # the forecast rests on hours of history: every tab and caller shares one result this long
+_forecast_cache: Dict[str, Any] = {"at": 0.0, "value": None}
+_forecast_lock = threading.Lock()
+
+
 def glitch_forecast() -> List[dict]:
+    """The glitch forecast, computed at most once per FORECAST_TTL_S (callers arriving meanwhile share it)."""
+    with _forecast_lock:
+        if _forecast_cache["value"] is not None and time.monotonic() - _forecast_cache["at"] < FORECAST_TTL_S:
+            return copy.deepcopy(_forecast_cache["value"])
+        value = _glitch_forecast()
+        _forecast_cache.update(at=time.monotonic(), value=value)
+        return copy.deepcopy(value)
+
+
+def _glitch_forecast() -> List[dict]:
     finals = final_streams()
     model = glitch_model.load(metrics.path)
     statuses = {r["d"]: r["s"] for r in driver.execute_query("MATCH (n:Domain) RETURN n.domain AS d, n.status AS s").records}

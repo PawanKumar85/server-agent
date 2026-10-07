@@ -3601,3 +3601,5 @@ html[data-theme="dark"] .nd-sm-val.warn {
 .nd-mutes { display: grid; gap: 4px; margin: 8px 0; }
 .nd-mute { display: flex; align-items: center; gap: 8px; font-size: 12.5px; cursor: pointer; }
 .nd-mute input { width: 15px; height: 15px; accent-color: var(--accent); }
+.origin-details { font-size: 11px; opacity: 0.8; margin-top: 2px; }
+.origin-details summary { cursor: pointer; width: fit-content; }

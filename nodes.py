@@ -1,4 +1,5 @@
 import json
+import re
 import os
 import socket
 from functools import cached_property
@@ -299,6 +300,52 @@ def connect_new_channels(driver, channels: Set[str]) -> List[Relationship]:
         rejected = replace_topology(driver, existing + added)
         added = [e for e in added if e not in {r for r, _ in rejected}]
     return added
+
+
+
+def move_link(driver, old_url: str, new: StreamLink) -> dict:
+    """Replaces the link `old_url` with `new`, on the right node: a URL on another server moves to that server's
+    node (made if new), not kept on the old one. The old node loses the URL (and any monitored URL left over from
+    an earlier edit that no link has any more), its health, and a role label no other link of it still has; edges between it and a server it no longer shares a channel with are removed;
+    the new node is wired into its channel's pipeline. Returns {"from", "to", "removed", "added"}."""
+    found = driver.execute_query(
+        f"MATCH (n:{DomainNode.label}) WHERE n.links CONTAINS $u RETURN n.domain AS d, n.links AS l, "
+        "labels(n) AS labels, n.urlHealth AS h", u=old_url).records
+    rec = next((r for r in found if any(l.get("url") == old_url for l in load_json_list(r["l"]))), None)
+    if rec is None:
+        raise ValueError(f"no node has the link {old_url}")
+    old_node = rec["d"]
+    kept = [l for l in load_json_list(rec["l"]) if l.get("url") != old_url]
+    if new.node_id == old_node:
+        kept.append({"url": str(new.url), "role": new.label, "channel": new.channel})
+    roles = {l.get("role") for l in kept}
+    drop_labels = [r for r in rec["labels"] if re.fullmatch(LABEL_PATTERN, r) and r != DomainNode.label
+                   and r not in roles]
+    try:
+        health = json.loads(rec["h"]) if rec["h"] else None
+    except ValueError:
+        health = None
+    if isinstance(health, dict):
+        health.pop(old_url, None)
+    remove = "".join(f" REMOVE n:`{r}`" for r in drop_labels)
+    driver.execute_query(
+        f"MATCH (n:{DomainNode.label} {{domain: $d}}) SET n.links = $links, "
+        "n.url = [u IN coalesce(n.url, []) WHERE u IN $keep], n.urlHealth = $health" + remove,
+        d=old_node, links=json.dumps(sorted(kept, key=lambda l: l["url"])), keep=[l["url"] for l in kept],
+        health=json.dumps(health) if isinstance(health, dict) else rec["h"])
+    if new.node_id != old_node:
+        upsert_nodes(driver, group_by_domain([new]))
+
+    # Edges of the old node to servers it no longer shares any channel with were only there for this link.
+    channels = {r["d"]: {l.get("channel") for l in load_json_list(r["l"])} for r in driver.execute_query(
+        f"MATCH (n:{DomainNode.label}) RETURN n.domain AS d, n.links AS l").records}
+    existing = current_topology(driver)
+    stale = [e for e in existing if old_node in (e.source, e.target)
+             and not channels.get(e.source, set()) & channels.get(e.target, set())]
+    if stale:
+        replace_topology(driver, [e for e in existing if e not in stale])
+    added = connect_new_channels(driver, {new.channel})
+    return {"from": old_node, "to": new.node_id, "removed": stale, "added": added}
 
 
 if __name__ == "__main__":

@@ -199,3 +199,62 @@ def test_links_added_one_at_a_time_are_wired_as_they_arrive(monkeypatch):
     monkeypatch.setattr(nodes, "replace_topology", lambda d, rels: [])
     assert nodes.connect_new_channels(driver, {"Rang Manch"}) == [
         R(source="xcode4.ottlive.co.in", type="PRODUCES", target="cdn.ottlive.co.in/Rang Manch")]
+
+
+def test_a_link_changed_to_another_server_moves_to_that_server(driver, graph, monkeypatch):
+    """The sakshitv bug: its Main URL was changed (in chat) from cloud to ingest3, but the link stayed on cloud."""
+    import json
+    import nodes
+    from nodes import Relationship as R, StreamLink
+    from tests.conftest import domain
+    cloud, ingest3, xcode = domain("cloud"), domain("ingest3"), domain("xcode3")
+    graph({"cloud": ["MainInput", "BackupLink"], "xcode3": ["Transcoding"]})
+    old_url = f"https://{cloud}/sakshitv/sakshitv/index.m3u8"
+    leftover = f"https://{cloud}/sakshitv-before/index.m3u8"  # an earlier edit's URL, still monitored, no link
+    driver.execute_query("MATCH (n:Domain {domain: $d}) SET n.links = $l, n.url = [$u, $o, $x], n.urlHealth = $h",
+                         d=cloud, u=old_url, o=f"https://{cloud}/other/index.m3u8", x=leftover,
+                         l=json.dumps([{"url": old_url, "role": "MainInput", "channel": "sakshitv"},
+                                       {"url": f"https://{cloud}/other/index.m3u8", "role": "BackupLink", "channel": "other"}]),
+                         h=json.dumps({old_url: {"up": False}}))
+    driver.execute_query("MATCH (n:Domain {domain: $d}) SET n.links = $l", d=xcode,
+                         l=json.dumps([{"url": f"https://{xcode}/sakshitv/index.m3u8", "role": "Transcoding", "channel": "sakshitv"}]))
+    edges = [R(source=cloud, type="FEEDS", target=xcode)]
+    written = []
+    monkeypatch.setattr(nodes, "current_topology", lambda d: list(edges))
+    monkeypatch.setattr(nodes, "replace_topology", lambda d, rels: written.append(rels) or [])
+    monkeypatch.setattr(nodes, "connect_new_channels", lambda d, ch: [R(source=ingest3, type="FEEDS", target=xcode)])
+
+    new = StreamLink(channel="sakshitv", label="MainInput", url=f"https://{ingest3}/sakshitv/sakshitv/index.m3u8")
+    moved = nodes.move_link(driver, old_url, new)
+
+    assert moved["from"] == cloud and moved["to"] == ingest3
+    rows = {r["d"]: r for r in driver.execute_query(
+        "MATCH (n:Domain) WHERE n.domain IN $ds RETURN n.domain AS d, labels(n) AS labels, n.links AS links, "
+        "n.url AS url, n.urlHealth AS h", ds=[cloud, ingest3]).records}
+    assert [l["channel"] for l in json.loads(rows[cloud]["links"])] == ["other"]
+    assert "MainInput" not in rows[cloud]["labels"] and "BackupLink" in rows[cloud]["labels"]  # its other link stays
+    assert rows[cloud]["url"] == [f"https://{cloud}/other/index.m3u8"]  # the moved and the leftover URL are gone
+    assert json.loads(rows[cloud]["h"]) == {}
+    assert "MainInput" in rows[ingest3]["labels"]
+    assert json.loads(rows[ingest3]["links"]) == [{"url": str(new.url), "role": "MainInput", "channel": "sakshitv"}]
+    # cloud no longer carries sakshitv, so its edge to xcode3 (sakshitv only) goes; ingest3 is wired instead
+    assert moved["removed"] == edges and written == [[]]
+    assert moved["added"] == [R(source=ingest3, type="FEEDS", target=xcode)]
+
+
+def test_a_link_changed_on_the_same_server_stays_there(driver, graph, monkeypatch):
+    import json
+    import nodes
+    from nodes import StreamLink
+    from tests.conftest import domain
+    cloud = domain("cloud")
+    graph({"cloud": ["MainInput"]})
+    old_url = f"https://{cloud}/a/index.m3u8"
+    driver.execute_query("MATCH (n:Domain {domain: $d}) SET n.links = $l", d=cloud,
+                         l=json.dumps([{"url": old_url, "role": "MainInput", "channel": "a"}]))
+    monkeypatch.setattr(nodes, "current_topology", lambda d: [])
+    monkeypatch.setattr(nodes, "connect_new_channels", lambda d, ch: [])
+    moved = nodes.move_link(driver, old_url, StreamLink(channel="a", label="MainInput", url=f"https://{cloud}/a2/index.m3u8"))
+    assert moved["from"] == moved["to"] == cloud
+    row = driver.execute_query("MATCH (n:Domain {domain: $d}) RETURN labels(n) AS l, n.links AS links", d=cloud).records[0]
+    assert "MainInput" in row["l"] and json.loads(row["links"])[0]["url"].endswith("/a2/index.m3u8")

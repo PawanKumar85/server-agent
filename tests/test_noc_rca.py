@@ -240,3 +240,48 @@ def test_healthy_server_gets_a_fixed_write_up_without_the_model():
     events = list(noc_rca.stream_rca(Bot(), {"zone": "none", "zoneLabel": "No fault", "prompt": "P"}))
     assert [e["type"] for e in events] == ["findings", "token", "done"]
     assert events[1]["text"] == noc_rca.HEALTHY_RCA and "prompt" not in events[0]
+
+
+# --- Node Agent telemetry ---
+
+def _telemetry_db(tmp_path, monkeypatch, rows):
+    import sqlite3, types, agent_hub, metrics
+    path = str(tmp_path / "m.db")
+    with sqlite3.connect(path) as db:
+        db.executescript(agent_hub.SCHEMA)
+        for r in rows:
+            db.execute("INSERT INTO agent_telemetry (ts, agent, node, net_errors, encoders) VALUES (?,?,?,?,?)", r)
+    monkeypatch.setattr(metrics, "store", lambda: types.SimpleNamespace(path=path))
+
+
+def test_old_telemetry_from_an_offline_agent_is_ignored(tmp_path, monkeypatch):
+    import time
+    _telemetry_db(tmp_path, monkeypatch, [(time.time() - 3600, "a1", "s.example", 0, 0)])
+    assert noc_rca.load_agent_telemetry("s.example") is None
+
+
+def test_nic_errors_are_counted_since_the_previous_report(tmp_path, monkeypatch):
+    import time
+    now = time.time()
+    _telemetry_db(tmp_path, monkeypatch, [(now - 10, "a1", "s.example", 100000, 1), (now - 2, "a1", "s.example", 100003, 1)])
+    t = noc_rca.load_agent_telemetry("s.example")
+    assert t["net_errors_new"] == 3 and t["had_encoders"]
+    assert "network interface" not in noc_rca.server_action(node(httpCode=404), "x", t)  # big total, few new
+    t["net_errors_new"] = 500
+    assert noc_rca.server_action(node(httpCode=404), "x", t).startswith("Inspect server network interface")
+
+
+def test_a_host_that_never_runs_an_encoder_is_not_blamed_for_one(tmp_path, monkeypatch):
+    import time
+    _telemetry_db(tmp_path, monkeypatch, [(time.time() - 5, "edge", "e.example", 0, 0)])
+    t = noc_rca.load_agent_telemetry("e.example")
+    assert t["had_encoders"] is False
+    assert noc_rca.server_action(node(httpCode=404), "x", t).startswith("Check the publishing point")
+    t["had_encoders"] = True
+    assert noc_rca.server_action(node(httpCode=404), "x", t).startswith("Restart streaming encoder")
+
+
+def test_a_drop_in_the_destination_network_gets_no_host_advice():
+    agent = {"encoders": 0, "had_encoders": True, "disk_max": 99}
+    action = noc_rca.server_action(node(httpCode=404, agent=agent), "the destination network drops traffic")
+    assert action.startswith("Check the publishing point")

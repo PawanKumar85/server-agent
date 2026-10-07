@@ -37,7 +37,7 @@ ZONES = {
 }
 
 PROMPT = """You are a Senior Network & Streaming Operations Engineer (NOC). Analyze the following streaming server \
-health check and traceroute diagnostic data and provide a concise, actionable root cause analysis (RCA).
+health check, node agent server telemetry, and traceroute diagnostic data and provide a concise, actionable root cause analysis (RCA).
 
 ---
 ### Input Diagnostic Data:
@@ -46,6 +46,7 @@ health check and traceroute diagnostic data and provide a concise, actionable ro
 - HTTP Health: {http_status_code} ({last_error})
 - Consecutive Ping Failures: {consecutive_failures}
 - Ping RTT: {avg_latency_ms} ms (Loss: {packet_loss_percent}%)
+{agent_telemetry_section}
 
 ### Traceroute Hop Path:
 {traceroute_hops}
@@ -195,8 +196,18 @@ def _classify(node: dict, trace: Optional[dict], hops: List[dict]) -> dict:
     reached = bool(trace and trace.get("reached"))
     if reached or ping_alive:
         why = "the network path reaches the server" if reached else "the server answers ping"
+        agent = node.get("agent")
+        if agent:
+            if agent.get("encoders") == 0 and agent.get("had_encoders"):
+                why += " and agent reports 0 active encoder processes (crashed/stopped)"
+            elif agent.get("disk_max") and agent["disk_max"] >= 95:
+                why += f" and agent reports storage critical ({agent['disk_max']}% full)"
+            elif agent.get("memory") and agent["memory"] >= 95:
+                why += f" and agent reports severe memory exhaustion ({agent['memory']}%)"
+            elif agent.get("hls_age_s") and agent["hls_age_s"] > 20:
+                why += f" and agent reports local HLS segments are stale ({round(agent['hls_age_s'], 1)}s old)"
         return {"zone": "server", "drop_point": f"None in the network: {why}, but the stream check fails.",
-                "last_good": trace and trace.get("target_ip"), "action": server_action(node, why)}
+                "last_good": trace and trace.get("target_ip"), "action": server_action(node, why, agent)}
     note = (" (the traceroute was inconclusive from where the monitor runs)" if trace and trace.get("inconclusive")
             else " (no traceroute yet)" if not trace else "")
     return {"zone": "unknown", "drop_point": f"Unknown{note}.", "last_good": None,
@@ -204,8 +215,23 @@ def _classify(node: dict, trace: Optional[dict], hops: List[dict]) -> dict:
                       "and ping the server from another location."}
 
 
-def server_action(node: dict, why: str) -> str:
-    code = node["httpCode"]
+def server_action(node: dict, why: str, agent: Optional[dict] = None) -> str:
+    if agent:  # only passed when the network reaches the server (a drop on the way is not the host's fault)
+        if agent.get("encoders") == 0 and agent.get("had_encoders"):
+            return "Restart streaming encoder: 0 active encoder processes (ffmpeg) found running on the server."
+        if agent.get("disk_max") and agent["disk_max"] >= 95:
+            return f"Free disk space on origin host: storage is {agent['disk_max']}% full, blocking segment writes."
+        if (agent.get("memory") and agent["memory"] >= 95) or (agent.get("cpu") and agent["cpu"] >= 98):
+            return (f"Host resource exhaustion (CPU {agent.get('cpu')}%, RAM {agent.get('memory')}%): "
+                    f"terminate hung processes or scale origin server.")
+        if agent.get("hls_age_s") and agent["hls_age_s"] > 20:
+            return (f"Restart stream pipeline: origin agent reports local HLS segments are stale "
+                    f"({round(agent['hls_age_s'], 1)}s old).")
+        if agent.get("net_errors_new") and agent["net_errors_new"] > NIC_ERRORS_PER_CHECK:
+            return (f"Inspect server network interface: {agent['net_errors_new']} new NIC errors since the "
+                    f"agent's previous report.")
+
+    code = node.get("httpCode")
     if code == 404:
         return "Check the publishing point: the stream path is missing on the origin (restart the origin encoder)."
     if code and code >= 500:
@@ -219,6 +245,41 @@ NODE_QUERY = """
 MATCH (n:Domain {domain: $id})
 RETURN properties(n) AS p, [l IN labels(n) WHERE l <> 'Domain'] AS roles
 """
+
+
+AGENT_FRESH_S = 120  # older telemetry is about a past state (the agent is offline), not this failure
+NIC_ERRORS_PER_CHECK = 50  # new interface errors between two reports (the agent sends counters since boot)
+
+
+def load_agent_telemetry(node_id: str) -> Optional[dict]:
+    """The Node Agent's latest report for this server, if it is from the last AGENT_FRESH_S seconds; with
+    net_errors_new (errors since its previous report) and had_encoders (the host ran an encoder in the last day,
+    so 0 encoders now means one stopped; a host that never runs one, like an edge, has nothing to blame)."""
+    try:
+        from metrics import store as metrics_store
+        import sqlite3
+        now = time.time()
+        with sqlite3.connect(metrics_store().path, timeout=5) as db:
+            db.row_factory = sqlite3.Row
+            rows = db.execute(
+                "SELECT ts, agent, node, cpu, memory, disk_max, load1, rx_bps, tx_bps, "
+                "net_errors, encoders, hls_status, hls_age_s FROM agent_telemetry "
+                "WHERE (node = ? OR agent = ?) AND ts >= ? ORDER BY ts DESC LIMIT 2",
+                (node_id, node_id, now - AGENT_FRESH_S)).fetchall()
+            if not rows:
+                return None
+            d = dict(rows[0])
+            d["age_s"] = round(now - d["ts"], 1)
+            prev = dict(rows[1]) if len(rows) > 1 and rows[1]["agent"] == d["agent"] else None
+            d["net_errors_new"] = (d["net_errors"] - prev["net_errors"]
+                                   if prev and d["net_errors"] is not None and prev["net_errors"] is not None
+                                   and d["net_errors"] >= prev["net_errors"] else None)  # lower = counters reset
+            d["had_encoders"] = bool(db.execute(
+                "SELECT 1 FROM agent_telemetry WHERE agent = ? AND encoders > 0 AND ts >= ? LIMIT 1",
+                (d["agent"], now - 86400)).fetchone())
+            return d
+    except Exception:
+        return None
 
 
 def load_node(driver, node_id: str) -> Optional[dict]:
@@ -245,6 +306,7 @@ def load_node(driver, node_id: str) -> Optional[dict]:
         "httpCode": int(code.group(1)) if code else None, "rttMs": p.get("lastRttMs"),
         "packetLoss": p.get("lastPacketLoss"), "latencyMs": p.get("lastLatencyMs"),
         "backupUp": backup_up, "traceroute": trace,
+        "agent": load_agent_telemetry(node_id),
     }
 
 
@@ -279,6 +341,25 @@ def analyse_node(driver, node_id: str) -> Optional[dict]:
     hops = label_hops(trace, lookup_asns([ip for ip in ips if ip])) if trace else []
     findings = classify(node, trace, hops)
     roles = ", ".join(ROLE_NAMES.get(r, r) for r in node["roles"])
+    agent = node.get("agent")
+    if agent:
+        rx_mbps = round((agent.get("rx_bps") or 0) / 1_000_000, 2)
+        tx_mbps = round((agent.get("tx_bps") or 0) / 1_000_000, 2)
+        agent_lines = [
+            "### Live Server Agent Telemetry (Host Internal Metrics):",
+            f"- Reporting Agent: {agent.get('agent')} ({agent.get('age_s', 0)}s ago)",
+            f"- CPU Usage: {agent.get('cpu')}% (Load1: {agent.get('load1')})",
+            f"- Memory Usage: {agent.get('memory')}%",
+            f"- Max Disk Storage: {agent.get('disk_max')}%",
+            f"- Network Throughput: RX {rx_mbps} Mbps | TX {tx_mbps} Mbps (new NIC errors: {agent.get('net_errors_new') if agent.get('net_errors_new') is not None else 'n/a'})",
+            f"- Active Encoders: {agent.get('encoders') if agent.get('encoders') is not None else 'not reported'}"
+            f"{'' if agent.get('had_encoders') else ' (this host has not run an encoder in the last day)'}",
+            f"- Origin HLS Freshness: {agent.get('hls_status') or 'n/a'} (Segment Age: {agent.get('hls_age_s')}s)"
+        ]
+        agent_section = "\n".join(agent_lines)
+    else:
+        agent_section = "- Node Agent: No agent telemetry connected for this host"
+
     prompt = PROMPT.format(
         server_domain=node_id, server_ip=node["ip"],
         channel_name=", ".join(node["channels"]) or "-", role=roles or "-",
@@ -287,13 +368,14 @@ def analyse_node(driver, node_id: str) -> Optional[dict]:
         consecutive_failures=node["consecutiveFailures"],
         avg_latency_ms=round(node["rttMs"], 1) if node["rttMs"] is not None else "n/a",
         packet_loss_percent=round(node["packetLoss"]) if node["packetLoss"] is not None else "n/a",
+        agent_telemetry_section=agent_section,
         traceroute_hops=format_hops(hops, trace),
         zone=ZONES[findings["zone"]], drop_point=findings["drop_point"], action=findings["action"],
     )
     return {"node": node_id, "status": node["status"], "zone": findings["zone"], "zoneLabel": ZONES[findings["zone"]],
             "dropPoint": findings["drop_point"], "action": findings["action"],
-            "tracerouteAt": (trace or {}).get("at"), "hops": [{k: h.get(k) for k in ("hop", "ip", "network", "owner")}
-                                                             for h in hops],
+            "tracerouteAt": (trace or {}).get("at"), "agent": agent,
+            "hops": [{k: h.get(k) for k in ("hop", "ip", "network", "owner")} for h in hops],
             "prompt": prompt}
 
 

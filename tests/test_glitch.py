@@ -154,3 +154,35 @@ def test_forecast_learns_the_normal_rate_and_the_upstream_that_comes_first(tmp_p
     assert f["leads"][0]["node"] == "xcode" and f["leads"][0]["hit"] == 0.71 and f["leads"][0]["lift"] > 2
     assert f["band"] == "HIGH" and any("came before 71% of past glitches" in r for r in f["reasons"])
     assert glitch.model_readiness(str(path))["ready"] is False
+
+
+def test_preceded_share_matches_the_one_by_one_search():
+    """The vectorised search gives the same answer as checking each timestamp with bisect."""
+    import bisect
+    import random
+    import numpy as np
+    from glitch import LEAD_WINDOW_S, _preceded_share
+    rng = random.Random(7)
+    fails = sorted(rng.uniform(0, 100000) for _ in range(300))
+    ts = [rng.uniform(-1000, 101000) for _ in range(2000)]
+
+    def preceded(t):
+        i = bisect.bisect_right(fails, t)
+        return i > 0 and t - fails[i - 1] <= LEAD_WINDOW_S
+    expected = sum(preceded(t) for t in ts) / len(ts)
+    assert _preceded_share(np.array(ts), np.array(fails)) == expected
+    assert _preceded_share(np.array([fails[0]]), np.array(fails)) == 1.0  # a failure at the same instant counts
+    assert _preceded_share(np.array([fails[0] - 1]), np.array(fails[:1])) == 0.0  # nothing before it
+
+
+def test_the_forecast_is_shared_for_a_while(monkeypatch):
+    import server
+    calls = []
+    monkeypatch.setattr(server, "_glitch_forecast", lambda: calls.append(1) or [{"url": "u", "risk": 1}])
+    server._forecast_cache.update(at=0.0, value=None)
+    a = server.glitch_forecast()
+    a[0]["risk"] = 99  # a caller changing its copy doesn't change the shared one
+    assert server.glitch_forecast() == [{"url": "u", "risk": 1}] and len(calls) == 1
+    server._forecast_cache["at"] -= server.FORECAST_TTL_S + 1
+    server.glitch_forecast()
+    assert len(calls) == 2
