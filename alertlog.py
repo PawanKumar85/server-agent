@@ -67,6 +67,7 @@ class AlertLog:
         self.path = str(path)
         self.lock = threading.Lock()
         self._learned: Optional[tuple] = None  # (computed at, rules)
+        self._learn_lock = threading.Lock()
         with self._connect() as db:
             db.executescript(SCHEMA)
 
@@ -130,31 +131,36 @@ class AlertLog:
     def learn(self, now: Optional[float] = None) -> List[dict]:
         """Rules "A on X -> B on Y within ~lag", from the last LEARN_DAYS of the log. Cached for 10 minutes."""
         now = now or time.time()
-        if self._learned and now - self._learned[0] < 600:
-            return self._learned[1]
+        with self._learn_lock:  # callers arriving while it runs wait for it instead of computing it again
+            if self._learned and now - self._learned[0] < 600:
+                return self._learned[1]
+            rules = self._learn(now)
+            self._learned = (now, rules)
+            return rules
+
+    def _learn(self, now: float) -> List[dict]:
         with self._connect() as db:
             rows = [dict(r) for r in db.execute("SELECT id, ts, node, kind FROM alerts WHERE ts >= ? ORDER BY ts",
                                                 (now - LEARN_DAYS * 86400,))]
         span = max(3600.0, (now - rows[0]["ts"]) if rows else 0.0)
+        # Endings and early warnings are never a cause or an effect here: drop them before the window scan (most of
+        # the log), so each alert only walks the alerts that can follow it. Same rules, a fraction of the work.
+        events = [(r["ts"], (r["node"], r["kind"])) for r in rows
+                  if r["kind"] not in CALM_KINDS and r["kind"] != "EARLY_WARNING"]
         counts: Dict[tuple, int] = defaultdict(int)
         follows: Dict[tuple, List[float]] = defaultdict(list)
-        for i, a in enumerate(rows):
-            if a["kind"] in CALM_KINDS or a["kind"] == "EARLY_WARNING":
-                continue
-            a_key = (a["node"], a["kind"])
+        for i, (a_ts, a_key) in enumerate(events):
             counts[a_key] += 1
             seen = set()
-            for b in rows[i + 1:]:
-                if b["ts"] - a["ts"] > FOLLOW_S:
+            for j in range(i + 1, len(events)):
+                b_ts, b_key = events[j]
+                if b_ts - a_ts > FOLLOW_S:
                     break
-                b_key = (b["node"], b["kind"])
-                if b_key == a_key or b["kind"] in CALM_KINDS or b["kind"] == "EARLY_WARNING" or b_key in seen:
+                if b_key == a_key or b_key in seen:
                     continue
                 seen.add(b_key)
-                follows[(a_key, b_key)].append(b["ts"] - a["ts"])
-        totals: Dict[tuple, int] = defaultdict(int)
-        for r in rows:
-            totals[(r["node"], r["kind"])] += 1
+                follows[(a_key, b_key)].append(b_ts - a_ts)
+        totals = counts  # an effect is never an ending or an early warning, so its count is the same
         rules = []
         for (a_key, b_key), lags in follows.items():
             n, alpha = len(lags), len(lags) / counts[a_key]  # Hawkes branching ratio alpha_ij
@@ -174,7 +180,6 @@ class AlertLog:
                               "share": round(alpha, 2), "hawkes_prob": round(hawkes_prob, 2), "support": n, "of": counts[a_key],
                               "lift": round(lift, 1), "lag_s": round(med_lag)})
         rules.sort(key=lambda r: (-r["share"], -r["support"]))
-        self._learned = (now, rules)
         return rules
 
     # --- predicting via Hawkes aftershocks and topology ---
