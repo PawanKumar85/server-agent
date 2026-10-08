@@ -531,6 +531,7 @@ function renderOriginBanner() {
             <span class="origin-victim-val">${esc(p.fix)}</span>
           </div>
           ${technical ? `<details class="origin-details"><summary>Details</summary>${esc(technical)}</details>` : ""}
+          ${typeof rateCauseHtml === "function" ? rateCauseHtml(orig.node, orig.onsetAt, [...(orig.groupNodes || []), ...(orig.victims || [])]) : ""}
         </div>
         <div class="origin-action-col">
           <button type="button" class="btn small origin-jump-btn" data-locate="${esc(orig.node)}" title="Show this server on the map">

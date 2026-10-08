@@ -270,6 +270,7 @@ function showDetail(id) {
           <strong>The pipeline problem started on this server</strong> (sustained & monitored for ${sustainedAgo}).
           ${victims.length ? `<div class="nd-callout-sub">⚠️ ${victims.length} downstream server(s) are failing as confirmed victims because of this node.</div>` : ""}
         </div>
+        ${typeof rateCauseHtml === "function" ? rateCauseHtml(id, confirmedObj.onsetAt, [...(confirmedObj.groupNodes || []), ...victims]) : ""}
       </div>
     `;
   } else if (isCandidateOrigin) {
@@ -302,6 +303,7 @@ function showDetail(id) {
           This server is not the origin. The problem started upstream on
           <button type="button" class="nd-chip" data-goto="${esc(top.node)}"><span class="dot" style="background:${statusColor((byId[top.node] || {}).status)}"></span>${esc(ndShortHost(top.node))}</button>${top.onsetAt ? ` (${ndAgo(top.onsetAt)})` : ""}.
         </div>
+        ${typeof rateCauseHtml === "function" ? rateCauseHtml(top.node, top.onsetAt, [...(group.nodes || [])]) : ""}
       </div>
     `;
   }

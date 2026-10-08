@@ -3639,3 +3639,16 @@ html[data-theme="dark"] .nd-sm-val.warn {
 #direct-panel .dl-tone-idle { color: var(--muted); }
 #direct-panel .dl-backup { grid-column: 2 / -1; color: var(--muted); font-size: 10.5px; display: flex; align-items: center; gap: 6px; }
 #direct-panel .dl-empty { margin: 8px; color: var(--muted); }
+
+/* "Was this the right cause?" (rate-cause.js): on the outage banner and in the server panel. */
+.rc-rate { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; margin-top: 6px; font-size: 12px; }
+.rc-rate .rc-q b { font-weight: 700; }
+.rc-rate .rc-choices { display: flex; flex-wrap: wrap; gap: 6px; }
+.rc-rate .rc-btn { font: inherit; font-weight: 600; padding: 3px 10px; border-radius: 999px; cursor: pointer;
+  border: 1px solid currentColor; background: transparent; color: inherit; }
+.rc-rate .rc-btn:hover, .rc-rate .rc-btn:focus-visible { background: color-mix(in srgb, currentColor 14%, transparent); outline: none; }
+.rc-rate .rc-link { font: inherit; background: none; border: 0; padding: 0; color: inherit; text-decoration: underline; cursor: pointer; opacity: .85; }
+.rc-rate .rc-progress { opacity: .75; font-size: 11px; }
+.rc-rate.rc-done { opacity: .9; }
+.origin-banner-item .rc-rate { color: #fff; }
+#detail .rc-rate { color: var(--text); }

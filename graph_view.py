@@ -60,7 +60,7 @@ def fetch_graph(driver, incidents=None) -> dict:
                 entry["detail"] = h["detail"]
             if h.get("lastDown"):
                 entry["lastDown"] = h["lastDown"]
-            for key in ("ignored", "category", "freshness", "segmentAgeS", "targetS", "bitrates", "resolutions", "cdn_cache", "server_hdr", "discontinuities"):
+            for key in ("ignored", "onsetAt", "onsetPrecisionS", "onsetMethod", "category", "freshness", "segmentAgeS", "targetS", "bitrates", "resolutions", "cdn_cache", "server_hdr", "discontinuities"):
                 val = h.get(key)
                 if val is not None and val != [] and val != "":
                     entry[key] = val

@@ -227,3 +227,19 @@ def test_the_pipeline_decides_who_is_the_likely_cause(world):
     assert together["nodes"] == ["ingest1", "final"]
     assert "ingest1 feeds final, so ingest1 is the likely cause" in together["text"]
     assert "goes first" not in together["text"] and together["lift"] >= 2
+
+
+def test_one_tap_outage_ratings_teach_the_ranking(world):
+    _, learner = world
+    k1, k2, k3 = "cloud|2026-10-08T10:00:00+00:00", "ingest1|2026-10-08T11:00:00+00:00", "live1|2026-10-08T12:00:00+00:00"
+    learner.rate_outage(k1, "cloud", True)
+    learner.rate_outage(k2, "ingest1", False, real="xcode4")  # wrong: it was xcode4
+    r = learner.rate_outage(k3, "live1", False, real="network")  # wrong, and no server to credit
+    assert (r["rated"], r["right"], r["wrong"], r["target"]) == (3, 1, 2, 50) and r["accuracy"] == 0.333
+    assert r["answers"][k2] == {"right": False, "real": "xcode4"} and r["answers"][k1] == {"right": True, "real": None}
+    p = learner.priors()
+    assert p["cloud"] > 1 and p["xcode4"] > 1  # confirmed, and named as the real culprit
+    assert p["ingest1"] < 1 and p["live1"] < 1  # wrongly blamed
+    assert "network" not in p
+    again = learner.rate_outage(k2, "ingest1", True)  # changed the answer: replaces, never double counts
+    assert (again["rated"], again["right"]) == (3, 2) and "xcode4" not in learner.priors()

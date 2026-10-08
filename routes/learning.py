@@ -65,6 +65,25 @@ def add_feedback(body: FeedbackRequest):
                                     tools=[t[:64] for t in body.tools])
 
 
+class OutageRatingRequest(BaseModel):
+    key: str = Field(min_length=3, max_length=400)  # "<blamed node>|<outage start>"
+    blamed: str = Field(min_length=1, max_length=255)
+    right: bool
+    real: Optional[str] = Field(None, max_length=255)  # the real culprit (a server, "network" or "other") when wrong
+
+
+@router.post("/api/learning/outage-rating")
+def rate_outage(body: OutageRatingRequest):
+    """One tap on "Was this the right cause?": teaches the root-cause ranking (priors) and counts towards 50."""
+    return srv.learner.rate_outage(body.key, body.blamed, body.right, body.real)
+
+
+@router.get("/api/learning/outage-ratings")
+def outage_ratings():
+    """Rated outages so far, accuracy, and each rated outage's answer."""
+    return srv.learner.outage_ratings()
+
+
 @router.post("/api/learning/resolution")
 def set_resolution(body: ResolutionRequest):
     case = srv.learner.set_resolution(body.node, body.resolution, body.opened)

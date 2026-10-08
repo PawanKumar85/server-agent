@@ -302,6 +302,45 @@ class Learner:
         return {r["node"]: round(min(1.6, max(0.5, 2 * (r["yes"] + 1) / (r["yes"] + r["no"] + 2))), 3)
                 for r in rows}
 
+    OUTAGE_PREFIX = "outage:"  # feedback.question of a one-tap outage rating: "outage:<blamed node>|<onset>"
+    RATING_TARGET = 50  # rated outages before the accuracy figure means much
+
+    def rate_outage(self, key: str, blamed: str, right: bool, real: Optional[str] = None) -> dict:
+        """One tap on "Was this the right cause?" for one outage. Right: a 👍 for the blamed server. Wrong: a 👎 for it,
+        and a 👍 for the real culprit when the operator picks one (real may also be "network" or "other": no server
+        to credit). Rating the same outage again replaces the earlier answer. Feeds priors() like any verdict."""
+        question = self.OUTAGE_PREFIX + key
+        real = (real or "").strip() or None
+        with self.lock, self._connect() as db:
+            db.execute("DELETE FROM feedback WHERE kind = 'root_cause' AND question = ?", (question,))
+            rows = [(blamed, 1 if right else -1, None if right else real)]
+            if not right and real and real not in ("network", "other") and real != blamed:
+                rows.append((real, 1, None))
+            for node, rating, correction in rows:
+                db.execute("INSERT INTO feedback (ts, kind, rating, node, question, answer, correction, source) "
+                           "VALUES (?, 'root_cause', ?, ?, ?, ?, ?, 'explicit')",
+                           (_now(), rating, node, question, f"blamed {blamed}", correction))
+        return {"key": key, "blamed": blamed, "right": right, "real": real, **self.outage_ratings(keys_only=False)}
+
+    def outage_ratings(self, keys_only: bool = False) -> dict:
+        """Progress towards RATING_TARGET rated outages, the accuracy so far, and each rated outage's answer
+        ({key: {"right", "real"}}, newest 300) so every screen shows it as answered."""
+        with self._connect() as db:
+            rows = db.execute("SELECT question, rating, correction, node, answer FROM feedback WHERE kind = 'root_cause' "
+                              "AND question LIKE ? ORDER BY id DESC", (self.OUTAGE_PREFIX + "%",)).fetchall()
+        answers: Dict[str, dict] = {}
+        for r in rows:
+            key = r["question"][len(self.OUTAGE_PREFIX):]
+            if f"blamed {r['node']}" != r["answer"]:
+                continue  # the 👍 for the real culprit of a wrong call: the blamed row carries the answer
+            answers.setdefault(key, {"right": r["rating"] > 0, "real": r["correction"]})
+        right = sum(a["right"] for a in answers.values())
+        out = {"rated": len(answers), "right": right, "wrong": len(answers) - right, "target": self.RATING_TARGET,
+               "accuracy": round(right / len(answers), 3) if answers else None}
+        if not keys_only:
+            out["answers"] = dict(list(answers.items())[:300])
+        return out
+
     def verdicts(self) -> Dict[str, Dict[str, int]]:
         with self._connect() as db:
             rows = db.execute("SELECT node, SUM(rating > 0) AS yes, SUM(rating < 0) AS no FROM feedback "
