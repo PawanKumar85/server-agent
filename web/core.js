@@ -215,40 +215,44 @@ function isFailing(h) {
 }
 window.isFailing = isFailing;
 
+// Flapping = 3 or more failures within the last 30 minutes. Failures hours apart are separate incidents, not
+// flapping; backup-feed failures (outage_class.py) don't count. Recent outages and the last sub-incident blip count.
+const FLAP_WINDOW_MS = 30 * 60 * 1000, FLAP_MIN = 3;
+const parseTs = t => Date.parse(String(t || "").replace(/(\.\d{3})\d+/, "$1")) || 0;
+
 function analyzeNodeStability(n) {
   if (!n) return null;
+  const now = Date.now();
   const log = n.log || [];
-  const outages = log.filter(l => l.type === "OUTAGE" || l.type === "ESCALATED");
-  const recoveries = log.filter(l => l.type === "RECOVERY");
-  const blipCount = n.blipCount || 0;
+  const recentOutages = log.filter(l => (l.type === "OUTAGE" || l.type === "ESCALATED") && l.class !== "BACKUP_FAILURE"
+                                        && now - parseTs(l.timestamp) <= FLAP_WINDOW_MS);
+  const starts = recentOutages.filter(l => l.type === "OUTAGE").map(l => parseTs(l.timestamp));
+  let lastBlip = null;
+  try { lastBlip = n.lastBlip ? JSON.parse(n.lastBlip) : null; } catch (_) { lastBlip = null; }
+  const blipAt = lastBlip && parseTs(lastBlip.at);
+  if (blipAt && now - blipAt <= FLAP_WINDOW_MS && !starts.some(t => Math.abs(t - blipAt) < 60000)) starts.push(blipAt);
+  if (starts.length < FLAP_MIN) return null;
+  starts.sort((a, b) => a - b);
 
-  const isFlapper = (outages.length >= 2 && recoveries.length >= 1) || (outages.length >= 1 && recoveries.length >= 2) || (blipCount >= 4);
-  if (!isFlapper) return null;
-
+  const recoveries = log.filter(l => l.type === "RECOVERY" && now - parseTs(l.timestamp) <= FLAP_WINDOW_MS);
   const durations = recoveries.map(r => r.durationS).filter(d => typeof d === "number" && d > 0);
-  const avgDuration = durations.length ? Math.round(durations.reduce((a, b) => a + b, 0) / durations.length) : (blipCount ? 15 : null);
-  const minDuration = durations.length ? Math.min(...durations) : 8;
-  const maxDuration = durations.length ? Math.max(...durations) : 35;
-
-  const categories = Array.from(new Set(outages.map(o => o.category).filter(Boolean)));
-  const isStaleMedia = categories.includes("STALE_MEDIA") || categories.includes("NO_SEGMENTS") || outages.some(o => (o.lastError || "").includes("STALE_SEGMENTS"));
-
+  const avgDuration = durations.length ? Math.round(durations.reduce((a, b) => a + b, 0) / durations.length) : 15;
+  const categories = Array.from(new Set(recentOutages.map(o => o.category).filter(Boolean)));
   const labels = n.labels || [];
-  const isBackup = labels.includes("BackupLink") && !labels.includes("MainInput");
-  const multiUrlOutage = outages.some(o => /^[2-9]\/\d+ URLs failing/.test(o.lastError || "") || (o.lastError || "").includes("2/2 URLs failing"));
-
   return {
     isFlapping: true,
-    dropCount: outages.length || blipCount,
+    dropCount: starts.length,
+    windowMin: FLAP_WINDOW_MS / 60000,
     recoveryCount: recoveries.length,
-    avgDuration: avgDuration || 18,
-    minDuration,
-    maxDuration,
-    isStaleMedia,
-    isBackup,
-    multiUrlOutage,
+    avgDuration,
+    minDuration: durations.length ? Math.min(...durations) : 8,
+    maxDuration: durations.length ? Math.max(...durations) : 35,
+    isStaleMedia: categories.includes("STALE_MEDIA") || categories.includes("NO_SEGMENTS")
+      || recentOutages.some(o => (o.lastError || "").includes("STALE_SEGMENTS")),
+    isBackup: labels.includes("BackupLink") && !labels.includes("MainInput"),
+    multiUrlOutage: recentOutages.some(o => /^[2-9]\/\d+ URLs failing/.test(o.lastError || "")),
     categories,
-    lastOutageAt: outages[outages.length - 1]?.timestamp,
+    lastOutageAt: new Date(starts[starts.length - 1]).toISOString(),
   };
 }
 window.analyzeNodeStability = analyzeNodeStability;

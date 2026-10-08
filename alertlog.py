@@ -38,14 +38,18 @@ MIN_LAG_S = 30  # B usually within seconds of A: they happen together (one incid
 TRIGGER_KINDS = {"OUTAGE", "ESCALATED", "SPIDER_STOPPED", "FAILOVER_ACTIVE", "SEGMENT_AGE_HIGH",
                  "GLITCH", "AD_STUCK", "NETWORK_SLOW", "SPIDER_ERROR"}
 CALM_KINDS = {"RECOVERY", "SPIDER_RECOVERED"}  # endings: never predicted from, never "followed"
+# Not outages (outage_class.py): kept and shown, but no cause or effect in the learned rules, like early warnings.
+NOISE_KINDS = {"EARLY_WARNING", "BLIP", "BACKUP_FAILURE"}
 SEVERITY = {"OUTAGE": "error", "ESCALATED": "error", "SPIDER_STOPPED": "error", "SPIDER_ERROR": "error",
             "AD_STUCK": "error", "FAILOVER_ACTIVE": "warn", "EARLY_WARNING": "warn", "SEGMENT_AGE_HIGH": "warn",
-            "GLITCH": "warn", "AD_OVERRUN": "warn", "NETWORK_SLOW": "warn", "RECOVERY": "ok", "SPIDER_RECOVERED": "ok"}
+            "GLITCH": "warn", "AD_OVERRUN": "warn", "NETWORK_SLOW": "warn", "RECOVERY": "ok", "SPIDER_RECOVERED": "ok",
+            "BLIP": "info", "BACKUP_FAILURE": "warn"}
 WORDS = {"OUTAGE": "goes down", "ESCALATED": "stays down (escalated)", "SPIDER_STOPPED": "its channel stops",
          "FAILOVER_ACTIVE": "switches to its backup", "EARLY_WARNING": "an early warning", "SEGMENT_AGE_HIGH":
          "video falling behind (segment age high)", "GLITCH": "glitches", "AD_STUCK": "stuck in an ad break",
          "AD_OVERRUN": "an ad break overruns", "NETWORK_SLOW": "the monitor's network slows",
-         "SPIDER_ERROR": "its checker errors", "RECOVERY": "recovers", "SPIDER_RECOVERED": "its channel recovers"}
+         "SPIDER_ERROR": "its checker errors", "RECOVERY": "recovers", "SPIDER_RECOVERED": "its channel recovers",
+         "BLIP": "has a short blip (back within a minute)", "BACKUP_FAILURE": "its backup feed fails"}
 PIPELINE_LAG_S = 90  # a downstream Final notices an upstream failure within a couple of checks
 
 SCHEMA = """
@@ -92,6 +96,17 @@ class AlertLog:
             db.execute("UPDATE alert_predictions SET outcome = 'HIT', hit_at = ? WHERE outcome = 'PENDING' AND node = ? "
                        "AND kind = ? AND made_at <= ? AND deadline >= ?", (ts, node, kind, ts, ts))
             return cur.lastrowid
+
+    def relabel_last(self, node: str, kind: str, new_kind: str, since: float) -> bool:
+        """An outage that turned out to be a blip: its alert, logged when it opened, is renamed (once it closed)."""
+        with self.lock, self._connect() as db:
+            row = db.execute("SELECT id FROM alerts WHERE node = ? AND kind = ? AND ts >= ? ORDER BY ts DESC LIMIT 1",
+                             (node, kind, since)).fetchone()
+            if not row:
+                return False
+            db.execute("UPDATE alerts SET kind = ?, severity = ? WHERE id = ?",
+                       (new_kind, SEVERITY.get(new_kind, "warn"), row["id"]))
+            return True
 
     def prune(self, now: Optional[float] = None) -> None:
         cutoff = (now or time.time()) - RETENTION_DAYS * 86400
@@ -146,7 +161,7 @@ class AlertLog:
         # Endings and early warnings are never a cause or an effect here: drop them before the window scan (most of
         # the log), so each alert only walks the alerts that can follow it. Same rules, a fraction of the work.
         events = [(r["ts"], (r["node"], r["kind"])) for r in rows
-                  if r["kind"] not in CALM_KINDS and r["kind"] != "EARLY_WARNING"]
+                  if r["kind"] not in CALM_KINDS and r["kind"] not in NOISE_KINDS]
         counts: Dict[tuple, int] = defaultdict(int)
         follows: Dict[tuple, List[float]] = defaultdict(list)
         for i, (a_ts, a_key) in enumerate(events):

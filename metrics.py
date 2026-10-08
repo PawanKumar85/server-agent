@@ -310,13 +310,29 @@ class Metrics:
             db.execute("INSERT OR IGNORE INTO incidents (ts, node, type, category, entry) VALUES (?,?,?,?,?)",
                        (entry.get("timestamp") or "", node, entry.get("type") or "", entry.get("category"),
                         json.dumps(entry)))
+            if entry.get("type") == "RECOVERY" and entry.get("class") == "BLIP":
+                # Back within a minute: the outage it closes was a blip (outage_class.py); its opening entry says so.
+                row = db.execute("SELECT id, entry FROM incidents WHERE node = ? AND type = 'OUTAGE' ORDER BY id DESC "
+                                 "LIMIT 1", (node,)).fetchone()
+                if row:
+                    opened = json.loads(row["entry"])
+                    if opened.get("class") != "BACKUP_FAILURE":
+                        opened["class"] = "BLIP"
+                        db.execute("UPDATE incidents SET entry = ? WHERE id = ?", (json.dumps(opened), row["id"]))
         if self.alert_log is not None and entry.get("type") in ("OUTAGE", "ESCALATED", "RECOVERY"):
             corr = (entry.get("correlation") or [{}])[0]
             try:
                 ts = datetime.fromisoformat(str(entry.get("timestamp")).replace("Z", "+00:00")).timestamp()
             except ValueError:
                 ts = None
-            self.alert_log.add(entry["type"], node, corr.get("channel"), entry.get("category") or entry.get("lastError") or "",
+            kind = entry["type"]
+            if kind in ("OUTAGE", "ESCALATED") and entry.get("class") == "BACKUP_FAILURE":
+                kind = "BACKUP_FAILURE"  # only a backup feed: shown, but not an outage
+            elif kind == "RECOVERY" and entry.get("class") in ("BLIP", "BACKUP_FAILURE"):
+                if entry.get("class") == "BLIP" and ts and entry.get("durationS") is not None:
+                    self.alert_log.relabel_last(node, "OUTAGE", "BLIP", ts - entry["durationS"] - 120)
+                return  # no recovery for something that was never counted as an outage
+            self.alert_log.add(kind, node, corr.get("channel"), entry.get("category") or entry.get("lastError") or "",
                                "incident", ts)
 
     def incidents(self, node: Optional[str] = None, limit: int = 50, since: Optional[str] = None) -> List[dict]:
@@ -362,6 +378,9 @@ class Metrics:
         for r in rows:
             node, kind, cat = r["node"], r["type"], r["category"] or "UNKNOWN"
             if kind == "OUTAGE":
+                if json.loads(r["entry"] or "{}").get("class") in ("BLIP", "BACKUP_FAILURE"):
+                    outages.pop(node, None)  # not an outage (outage_class.py): its recovery isn't counted either
+                    continue
                 outages[node] = {"ts": r["ts"], "category": cat}
             elif kind == "RECOVERY" and node in outages:
                 prev = outages.pop(node)

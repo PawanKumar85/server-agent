@@ -28,6 +28,41 @@ def _clean_expired_actions() -> None:
         PENDING_ACTIONS.pop(k, None)
 
 
+def stage_mcp_send(tool: Any, args: dict) -> Iterator[dict]:
+    """A send tool (WhatsApp, SMS, email, Slack, Telegram, webhook, PagerDuty) reaches people or systems outside the
+    dashboard, so the model never runs one on its own: the request is staged and shown as an Allow/Deny card with
+    exactly what would be sent where. Only the user's Allow (or a typed CONFIRM act_...) sends it; Deny drops it."""
+    _clean_expired_actions()
+    action_id = f"act_{uuid.uuid4().hex[:8]}"
+    args = dict(args or {})
+    lines = [f"**{k}**: {str(v)[:300]}" for k, v in args.items() if v not in (None, "", [], {})] or ["(no details given)"]
+    title = f"Send via {getattr(tool, 'provider', tool.name)}"
+    PENDING_ACTIONS[action_id] = {"action": "mcp_send", "title": title, "params": {"tool": tool.name, "args": args},
+                                  "created_at": time.time(), "summary": f"{tool.name} with {len(args)} field(s)"}
+    yield {"type": "action_confirm", "action_id": action_id, "action": "mcp_send", "kind": "send", "title": title,
+           "severity": "warning", "summary": f"The assistant wants to use {tool.name}.",
+           "ask": "This sends a message outside the dashboard. Allow it?", "warning": "\n".join(lines),
+           "params": {"tool": tool.name, "args": args}}
+    yield {"type": "token",
+           "text": f"⚠️ **Permission needed: {title}**\n\nNothing has been sent. Click **Allow** above (or reply "
+                   f"`CONFIRM {action_id}`) to send it, or **Deny** to cancel.\n"}
+
+
+def run_mcp_send(params: dict) -> Iterator[dict]:
+    """Sends a staged request after the user allowed it."""
+    from mcp_server import mcp_server
+    tool = mcp_server.get_tool(params.get("tool", ""))
+    if not tool:
+        yield {"type": "token", "text": f"Error: the tool {params.get('tool')!r} no longer exists. Nothing was sent.\n"}
+        return
+    try:
+        res = tool.execute(params.get("args") or {})
+    except Exception as e:
+        yield {"type": "token", "text": f"❌ {tool.name} failed: {type(e).__name__}: {e}\n"}
+        return
+    yield {"type": "token", "text": f"### {tool.icon} Allowed and run: `{tool.name}`\n\n```json\n{json.dumps(res, indent=2)}\n```\n"}
+
+
 QUERY_MAX_ROWS = 200
 QUERY_SHOW_ROWS = 50
 QUERY_TIMEOUT_S = 10
@@ -741,6 +776,18 @@ class Tools:
 
         action_name = action_data["action"]
         params = action_data["params"]
+
+        if action_name == "mcp_send":  # a message to the outside world the user just allowed
+            yield from run_mcp_send(params)
+            try:
+                from activity import record_activity
+                record_activity(driver=self.driver, embedder=getattr(self.chatbot, "embedder", None), act_type="action",
+                                title=f"Action: {action_data.get('title')}",
+                                summary=f"User allowed {params.get('tool')} from the chat.", target=str(params.get("tool")),
+                                details=params)
+            except Exception:
+                pass
+            return
 
         handler = getattr(self, f"tool_{action_name}", None)
         if handler and callable(handler):

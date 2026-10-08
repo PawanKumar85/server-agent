@@ -85,3 +85,32 @@ def test_notification_tools_are_offered_only_when_asked_about():
     assert not any(n.startswith("mcp_") for n in names("is xcode4 up?"))
     assert "mcp_send_email" in names("send an email to the NOC team about tnpnews")
     assert "recommend_cdn_placement" in names("where should we put a new CDN?")
+
+
+def test_chat_send_tools_wait_for_allow(monkeypatch):
+    """LLM -> tool request -> permission check: a send only happens after the user's Allow; Deny blocks it."""
+    import json
+    from types import SimpleNamespace
+    import tools
+    from mcp_server import mcp_server
+    hook = mcp_server.get_tool("mcp_send_webhook")
+    sent = []
+    monkeypatch.setattr(hook, "execute", lambda args: sent.append(args) or {"status": "sent", "sent": True})
+    executor = tools.Tools(SimpleNamespace(driver=None))
+    args = {"url": "https://hooks.example.com/x", "payload": {"text": "tnpnews down"}}
+
+    events = list(executor.execute({"name": "mcp_send_webhook", "arguments": json.dumps({**args, "confirmed": True})}))
+    card = next(e for e in events if e["type"] == "action_confirm")
+    assert sent == []  # nothing left the dashboard, even when the model claims "confirmed"
+    assert card["kind"] == "send" and "hooks.example.com" in card["warning"]
+    assert tools.PENDING_ACTIONS[card["action_id"]]["action"] == "mcp_send"
+
+    allowed = "".join(e.get("text", "") for e in executor.execute_confirmed_action(card["action_id"]))
+    assert sent == [args] and "Allowed and run" in allowed
+    assert "not found" in "".join(e.get("text", "") for e in executor.execute_confirmed_action(card["action_id"]))  # once only
+
+    events = list(executor.execute({"name": "mcp_send_webhook", "arguments": json.dumps(args)}))
+    denied = next(e for e in events if e["type"] == "action_confirm")["action_id"]
+    list(executor.cancel_action(denied))
+    list(executor.execute_confirmed_action(denied))
+    assert sent == [args]  # the denied one never went out

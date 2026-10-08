@@ -27,6 +27,7 @@ from dotenv import load_dotenv
 from neo4j import GraphDatabase
 from pydantic import BaseModel
 
+from outage_class import BACKUP_FAILURE, OUTAGE, backup_only, classify
 from health import STALE_AFTER_TARGET_DURATIONS, NodeHealth, UrlCheck, check_node, failing, failure_text, http_client
 import rca_rank
 from metrics import store
@@ -276,7 +277,21 @@ RECOVER_AFTER_SUCCESSES = int(os.environ.get("RECOVER_AFTER_SUCCESSES", "2"))
 
 # Deduplication and adaptive polling settings
 HEALTH_CACHE_ENABLED = os.environ.get("HEALTH_CACHE_ENABLED", "1") not in ("0", "false", "False")
-HEALTH_CACHE_TTL_S = float(os.environ.get("HEALTH_CACHE_TTL_S", "5.0"))  # never spans two cycles: a fresh outage is never hidden
+# Adaptive checking: a server shared by several channels is reached by each channel's run (cloud carries 6, so
+# its 7 streams were re-checked about every 5 s). How long a check is reused depends on how the server is doing:
+# all streams fresh -> HEALTH_TTL_FRESH_S; a stream falling behind (WARNING / DEGRADED) -> HEALTH_TTL_WARNING_S;
+# failing -> never reused (every run checks it, every 5 s in the outage tier).
+HEALTH_TTL_FRESH_S = float(os.environ.get("HEALTH_TTL_FRESH_S", "15"))
+HEALTH_TTL_WARNING_S = float(os.environ.get("HEALTH_TTL_WARNING_S", "5"))
+
+
+def reuse_ttl(health: NodeHealth) -> float:
+    """How long a server's last check may stand in for a new one (see HEALTH_TTL_FRESH_S)."""
+    if not health.up:
+        return 0.0
+    if any(u.freshness in ("WARNING", "DEGRADED") for u in health.urls or [] if not u.ignored):
+        return min(HEALTH_TTL_WARNING_S, HEALTH_TTL_FRESH_S)
+    return HEALTH_TTL_FRESH_S
 ADAPTIVE_POLLING = os.environ.get("ADAPTIVE_POLLING", "1") not in ("0", "false", "False")
 INTERMEDIATE_CADENCE_S = float(os.environ.get("INTERMEDIATE_CADENCE_S", "60.0"))
 
@@ -543,9 +558,9 @@ class HealthRecorder:
 
     def _probe(self, node_id: str, max_age_s: Optional[float] = None) -> "asyncio.Future[NodeHealth]":
         if node_id not in self.probes:
-            ttl = max_age_s if max_age_s is not None else HEALTH_CACHE_TTL_S
             if HEALTH_CACHE_ENABLED and node_id in _GLOBAL_NODE_CACHE:
                 cached_ts, cached_health = _GLOBAL_NODE_CACHE[node_id]
+                ttl = max_age_s if max_age_s is not None else reuse_ttl(cached_health)
                 # Reuse if within TTL and node was healthy (if failed, always re-probe fresh)
                 if time.monotonic() - cached_ts < ttl and cached_health.up:
                     loop = asyncio.get_running_loop()
@@ -714,25 +729,33 @@ class HealthRecorder:
         entry = None
         if not health.up and fails >= INCIDENT_AFTER_FAILURES and not is_open:
             failed = failing(health.urls)
+            roles = {l["url"]: l.get("role") for l in load_json_list(state_row.get("links"))}
             needles = {f'"channel": "{l["channel"]}"' for l in load_json_list(state_row.get("links"))
                        if l["url"] in {c.url for c in failed}}
             chain_rows = [dict(r) for needle in needles for r in tx.run(CHANNEL_CHAIN, needle=needle)]
             unique = list({r["node"]: r for r in chain_rows}.values())
             entry = {"type": "OUTAGE", "from": "UP", "to": "DOWN", **base,
                      "category": incident_category(health.urls),
-                     "failedUrls": [{"url": c.url, "category": c.category, "detail": c.detail,
+                     "failedUrls": [{"url": c.url, "role": roles.get(c.url), "category": c.category, "detail": c.detail,
                                      "freshness": c.freshness, "segmentAgeS": c.segment_age_s} for c in failed],
+                     # only backup feeds down: a standby problem, not an outage (outage_class.py)
+                     "class": BACKUP_FAILURE if backup_only([{"url": c.url, "role": roles.get(c.url)} for c in failed])
+                              else OUTAGE,
                      "correlation": correlate(unique, node_id, failed, now)}
             tx.run("MATCH (n:Domain {domain: $id}) SET n.incidentOpen = true", id=node_id)
         elif not health.up and fails == self.alert_threshold and self.alert_threshold > INCIDENT_AFTER_FAILURES:
-            entry = {"type": "ESCALATED", "from": "DOWN", "to": "DOWN", **base, "category": incident_category(health.urls)}
+            roles = {l["url"]: l.get("role") for l in load_json_list(state_row.get("links"))}
+            entry = {"type": "ESCALATED", "from": "DOWN", "to": "DOWN", **base, "category": incident_category(health.urls),
+                     "class": BACKUP_FAILURE if backup_only([{"url": c.url, "role": roles.get(c.url)}
+                                                             for c in failing(health.urls)]) else OUTAGE}
         elif health.up and is_open and oks >= RECOVER_AFTER_SUCCESSES:
             opened = self.metrics.last_incident(node_id, "OUTAGE")
             duration = None
             if opened and opened.get("timestamp"):
                 duration = int((datetime.fromisoformat(now) - datetime.fromisoformat(opened["timestamp"])).total_seconds())
             entry = {"type": "RECOVERY", "from": "DOWN", "to": "UP", **base,
-                     "category": (opened or {}).get("category"), "durationS": duration}
+                     "category": (opened or {}).get("category"), "durationS": duration,
+                     "class": classify(opened or {}, duration)}  # a BLIP when back within a minute
             tx.run("MATCH (n:Domain {domain: $id}) SET n.incidentOpen = false", id=node_id)
         elif health.up and oks == 1 and res["previous"] == "DOWN" and not is_open:
             # Failed fewer times than an incident needs, then recovered: a blip, not an outage.

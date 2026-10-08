@@ -186,6 +186,8 @@ def build_risk_profile(node_id: str,
         except (ValueError, TypeError):
             continue
         etype = (e.get("type") or "").upper()
+        if etype == "OUTAGE" and e.get("class") in ("BLIP", "BACKUP_FAILURE"):
+            continue  # not an outage (outage_class.py)
         if etype == "OUTAGE":
             outage_times.append(ts.timestamp())
             hour_counts[ts.hour] += 1

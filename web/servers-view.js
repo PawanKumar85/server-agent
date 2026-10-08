@@ -31,7 +31,12 @@ function scoreServer(n) {
   let score = 0;
   const health = Object.values(n.urlHealth || {});
   const failing = health.filter(h => isFailing(h));
-  const down = n.status === "DOWN";
+  // Only backup feeds failing (outage_class.py): a warning on a server whose main feeds still play, not "down".
+  const role = Object.fromEntries((n.links || []).map(l => [l.url, l.role]));
+  const failingUrls = Object.entries(n.urlHealth || {}).filter(([, h]) => isFailing(h)).map(([u]) => u);
+  const backupOnly = failingUrls.length > 0 && failingUrls.every(u => role[u] === "BackupLink");
+  const down = n.status === "DOWN" && !backupOnly;
+  if (backupOnly) reasons.push({tone: "warn", text: "A backup feed is down (main feeds still playing)"});
   if (down) {
     score += 45;
     const p = failing.length && typeof urlProblem === "function" ? urlProblem(failing[0]) : null;

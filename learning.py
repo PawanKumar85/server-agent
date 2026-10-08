@@ -15,6 +15,7 @@ Questions are matched by embedding (the shared MiniLM). With a few hundred rows 
 """
 
 import json
+from outage_class import BACKUP_FAILURE, BLIP, BLIP_S, NOT_OUTAGES, classify
 import os
 import re
 import sqlite3
@@ -114,6 +115,13 @@ class Learner:
                 # Added later: rebuild the cases (none have a fix recorded yet) so they get their onset.
                 db.execute("ALTER TABLE cases ADD COLUMN onset TEXT")
                 db.execute("DELETE FROM cases WHERE resolution IS NULL")
+            if "class" not in {r["name"] for r in db.execute("PRAGMA table_info(cases)")}:
+                # Added later (outage_class.py): rebuild the cases from the incident log so each gets its class;
+                # one with a fix recorded keeps its row and is classed by how long it lasted.
+                db.execute("ALTER TABLE cases ADD COLUMN class TEXT")
+                db.execute("DELETE FROM cases WHERE resolution IS NULL")
+                db.execute("UPDATE cases SET class = CASE WHEN duration_s < ? THEN 'BLIP' ELSE 'OUTAGE' END",
+                           (BLIP_S,))
 
     def _connect(self) -> sqlite3.Connection:
         db = sqlite3.connect(self.path, timeout=10)
@@ -166,9 +174,9 @@ class Learner:
         with self.lock, self._connect() as db:
             db.executemany(
                 "INSERT OR IGNORE INTO cases (node, opened, closed, category, verdict, root_cause, duration_s, "
-                "channels, text, vec, onset) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                "channels, text, vec, onset, class) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                 [(c["node"], c["opened"], c["closed"], c["category"], c["verdict"], c["root_cause"], c["duration_s"],
-                  json.dumps(c["channels"]), c["text"], v, c["onset"]) for c, v in zip(new, vecs)])
+                  json.dumps(c["channels"]), c["text"], v, c["onset"], c["class"]) for c, v in zip(new, vecs)])
         self._patterns = None
         return len(new)
 
@@ -191,7 +199,9 @@ class Learner:
         if duration is None and _dt(outage.get("timestamp")) and _dt(recovery.get("timestamp")):
             duration = int((_dt(recovery["timestamp"]) - _dt(outage["timestamp"])).total_seconds())
         category = outage.get("category") or recovery.get("category")
-        text = (f"{node} outage ({category or 'down'})"
+        kind = recovery.get("class") or classify(outage, duration)
+        noun = {BLIP: "blip", BACKUP_FAILURE: "backup feed failure"}.get(kind, "outage")
+        text = (f"{node} {noun} ({category or 'down'})"
                 + (f" on {', '.join(channels)}" if channels else "")
                 + (f"; fault {', '.join(verdicts).lower().replace('_', ' ')}" if verdicts else "")
                 + (f"; likely root cause {root}" if root and root != node else "")
@@ -199,7 +209,8 @@ class Learner:
                 + f"; lasted {duration_words(duration)}; started {when_words(outage.get('timestamp'))}")
         return {"node": node, "opened": outage.get("timestamp"), "closed": recovery.get("timestamp"),
                 "category": category, "verdict": ", ".join(verdicts) or None, "root_cause": root,
-                "duration_s": duration, "channels": channels, "text": text, "onset": onset or outage.get("timestamp")}
+                "duration_s": duration, "channels": channels, "text": text, "onset": onset or outage.get("timestamp"),
+                "class": kind}
 
     def cases(self, node: Optional[str] = None, limit: int = 20) -> List[dict]:
         self.sync_cases()
@@ -430,9 +441,22 @@ class Learner:
         if self._patterns is not None and time.time() - self._patterns_at < PATTERN_CACHE_S:
             return self._patterns
         with self._connect() as db:
-            rows = [dict(r) for r in db.execute("SELECT node, coalesce(onset, opened) AS opened, category, duration_s "
-                                                "FROM cases ORDER BY opened")]
+            every = [dict(r) for r in db.execute("SELECT node, coalesce(onset, opened) AS opened, category, duration_s, "
+                                                 "class FROM cases ORDER BY opened")]
+        # Blips and backup-feed failures are not outages (outage_class.py): they'd make a server with one noisy
+        # backup look like the worst one, and pair it with everything by chance. Counted apart, said once.
+        rows = [r for r in every if r["class"] not in NOT_OUTAGES]
         found: List[dict] = []
+        noise: Dict[str, Counter] = {}
+        for r in every:
+            if r["class"] in NOT_OUTAGES:
+                noise.setdefault(r["node"], Counter())[r["class"]] += 1
+        for node, c in noise.items():
+            if sum(c.values()) >= MIN_PATTERN:
+                parts = [f"{c[BACKUP_FAILURE]} backup-feed failure{'s' if c[BACKUP_FAILURE] != 1 else ''}"] if c[BACKUP_FAILURE] else []
+                parts += [f"{c[BLIP]} short blip{'s' if c[BLIP] != 1 else ''} (back within a minute)"] if c[BLIP] else []
+                found.append({"kind": "noise", "nodes": [node], "count": sum(c.values()),
+                              "text": f"{short(node)} also had {' and '.join(parts)}: not counted as outages."})
         by_node: Dict[str, List[dict]] = {}
         for r in rows:
             if _dt(r["opened"]):

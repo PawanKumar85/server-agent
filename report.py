@@ -166,8 +166,13 @@ def success_rate(n: dict) -> Optional[float]:
     return 100 * (1 - failed / pings) if pings else None
 
 
+def _real_outage(e: dict) -> bool:
+    """An outage opening that counts: not a blip or a backup-feed failure (outage_class.py)."""
+    return e.get("type") == "OUTAGE" and e.get("class") not in ("BLIP", "BACKUP_FAILURE")
+
+
 def outage_count(n: dict) -> int:
-    return (n["incidentStats"] or {}).get("outages", 0) + sum(e.get("type") == "OUTAGE" for e in n["log"])
+    return (n["incidentStats"] or {}).get("outages", 0) + sum(_real_outage(e) for e in n["log"])
 
 
 def insights(data: Dict[str, Any], monitor: Optional[dict] = None, node_id: Optional[str] = None) -> List[dict]:
@@ -203,7 +208,7 @@ def insights(data: Dict[str, Any], monitor: Optional[dict] = None, node_id: Opti
             for kind, c in ((n["incidentStats"] or {}).get("errors") or {}).items():
                 errors[kind] += c
             for e in n["log"]:
-                if e.get("type") == "OUTAGE" and _error_kind(e.get("lastError")):
+                if _real_outage(e) and _error_kind(e.get("lastError")):
                     errors[_error_kind(e.get("lastError"))] += 1
             top = ", ".join(f"{k} ×{v}" for k, v in errors.most_common(3)) or "unknown"
             add("medium", "Stability", f"{n['id']} flaps: {outages} outages recorded", f"most common errors: {top}",
@@ -1028,7 +1033,7 @@ def ml_hazard_forecast_html(nodes: List[dict], node_id: Optional[str] = None) ->
                 continue
             # Real gaps between this node's outages, and the time since its last one.
             starts = sorted(datetime.fromisoformat(str(e["timestamp"]).replace("Z", "+00:00")).timestamp()
-                            for e in (n.get("log") or []) if e.get("type") == "OUTAGE" and e.get("timestamp"))
+                            for e in (n.get("log") or []) if _real_outage(e) and e.get("timestamp"))
             gaps = [b - a for a, b in zip(starts, starts[1:]) if b > a]
             if len(gaps) < 3:
                 rows.append(f"<tr><td><span class='mono'><b>{_e(n.get('id'))}</b></span></td><td>{_e(n.get('role', 'Node'))}</td>"

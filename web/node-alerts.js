@@ -201,6 +201,14 @@ function cardAlertRaw(nodeId, url) {
               text: `Downstream victim: problem started upstream on ${alertShort(top.node)}${top.onsetAt ? ` (${alertSince(top.onsetAt)})` : ""}.`, since};
     }
 
+    // Only backup feeds failing while the main feeds play: a standby problem, not an outage (outage_class.py).
+    const role = Object.fromEntries((n.links || []).map(l => [l.url, l.role]));
+    const failingUrls = url ? [url] : Object.entries(health).filter(([, h]) => isFailing(h)).map(([u]) => u);
+    if (failingUrls.length && failingUrls.every(u => role[u] === "BackupLink")) {
+      const chs = [...new Set((n.links || []).filter(l => failingUrls.includes(l.url)).map(l => l.channel).filter(Boolean))];
+      return {tone: "warn", title: "Backup feed down", pill: "⚠ backup down", key: `backup-down-${nodeId}`, since,
+              text: `${chs.join(", ") || "A channel"}'s backup feed is failing; the main feed is still on air. Fix it before the main needs it.`};
+    }
     const p = failing.length ? urlProblem(failing[0]) : {title: "Down", text: n.lastError || ""};
     const extra = failing.length > 1 ? ` ${failing.length} streams failing.` : "";
 
@@ -238,7 +246,7 @@ function cardAlertRaw(nodeId, url) {
       tone: "flapping",
       title: "Intermittent stream stalls (flapping)",
       key: `flapping-${nodeId}`,
-      pill: `🔄 Flapping (${stability.dropCount} drops)`,
+      pill: `🔄 Flapping (${stability.dropCount} drops in ${stability.windowMin} min)`,
       text: `Server is currently UP, but has ${stability.dropCount} transient stalls (~${stability.avgDuration || 18}s). Click for root cause & permanent fix guide.`,
       since: stability.lastOutageAt || ""
     };

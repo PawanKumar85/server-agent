@@ -212,11 +212,9 @@ class MCPChatToolAdapter(BaseChatTool):
         self.parameters = mcp_tool.parameters
 
     def execute(self, executor: Any, args: dict) -> Iterator[dict]:
-        res = self._tool.execute(args)
-        md = f"### {self._tool.icon} MCP Tool Executed: `{self.name}`\n\n"
-        md += f"**Provider:** {self._tool.provider}\n\n"
-        md += "```json\n" + json.dumps(res, indent=2) + "\n```"
-        yield {"type": "token", "text": md}
+        # Never sent on the model's say-so: staged for the user's Allow / Deny (tools.stage_mcp_send).
+        from tools import stage_mcp_send
+        yield from stage_mcp_send(self._tool, args)
 
 
 try:

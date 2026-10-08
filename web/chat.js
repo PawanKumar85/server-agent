@@ -145,12 +145,12 @@ async function sendChat(text) {
       const previewItems = preview.map(p => `<li>${esc(p).replace(/\*\*(.+?)\*\*/g, "<b>$1</b>")}</li>`).join("");
       return `<div class="action-card ${isDanger ? 'danger' : 'warning'}" id="card-${esc(actionCard.action_id)}">
         <div class="action-card-header">
-          <span class="action-card-badge">${isDanger ? '⚠️ HIGH IMPACT' : '⚡ MUTATION'}</span>
+          <span class="action-card-badge">${isDanger ? '⚠️ HIGH IMPACT' : actionCard.kind === 'send' ? '📤 SEND' : '⚡ MUTATION'}</span>
           <span class="action-card-title">${esc(actionCard.title)}</span>
         </div>
         <div class="action-card-body">
           <p class="action-card-desc">${esc(actionCard.description || actionCard.summary || "")}</p>
-          <p class="action-card-ask">The assistant wants to change the graph. Allow it?</p>
+          <p class="action-card-ask">${esc(actionCard.ask || "The assistant wants to change the graph. Allow it?")}</p>
           <ul class="action-card-preview">${previewItems}</ul>
         </div>
         <div class="action-card-actions">

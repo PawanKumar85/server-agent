@@ -378,3 +378,14 @@ def test_a_url_no_longer_checked_leaves_url_health():
                                      UrlCheck(url="keep", up=True, detail="ok")], now)
     after = json.loads(merge_url_health(before, [UrlCheck(url="keep", up=True, detail="ok")], now))
     assert set(after) == {"keep"}
+
+
+def test_checks_are_reused_by_how_the_server_is_doing():
+    """Adaptive checking: fresh servers are re-checked less often than ones falling behind; failing ones always."""
+    from health import NodeHealth, UrlCheck
+    from spider import HEALTH_TTL_FRESH_S, HEALTH_TTL_WARNING_S, reuse_ttl
+    node = lambda up, *fresh: NodeHealth(node_id="n", check_type="HLS", up=up,
+                                         urls=[UrlCheck(url=f"u{i}", up=up, detail="", freshness=f) for i, f in enumerate(fresh)])
+    assert reuse_ttl(node(True, "FRESH", "FRESH")) == HEALTH_TTL_FRESH_S == 15
+    assert reuse_ttl(node(True, "FRESH", "WARNING")) == HEALTH_TTL_WARNING_S == 5
+    assert reuse_ttl(node(False, "STALE")) == 0

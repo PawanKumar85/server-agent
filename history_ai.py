@@ -5,6 +5,7 @@ points, so it can't misread them, and it is told to use only these numbers.
 """
 
 import statistics
+from outage_class import NOT_OUTAGES
 import time
 from collections import Counter
 from datetime import datetime, timedelta, timezone
@@ -52,14 +53,16 @@ def facts(tl: dict, learned: Optional[dict] = None) -> Dict[str, object]:
     span_h = max(1, (tl.get("to", 0) - tl.get("from", 0)) / 3600)
     checks, fails = tl.get("checks") or 0, tl.get("fails") or 0
     incidents = tl.get("incidents") or []
-    outages = [i for i in incidents if i["type"] == "OUTAGE"]
+    outages = [i for i in incidents if i["type"] == "OUTAGE" and i.get("class") not in NOT_OUTAGES]
+    noise = [i for i in incidents if i["type"] == "OUTAGE" and i.get("class") in NOT_OUTAGES]
     recoveries = [i for i in incidents if i["type"] == "RECOVERY" and i.get("durationS") is not None]
     blips = [i for i in incidents if i["type"] == "BLIP"]
     out: Dict[str, object] = {
         "server": tl.get("node"), "history": f"{span_h:.0f} h" if span_h < 48 else f"{span_h / 24:.1f} days",
         "from": _when(tl["from"]) if tl.get("from") else None, "to": _when(tl["to"]) if tl.get("to") else None,
         "checks": checks, "uptime_pct": round(100 * (checks - fails) / checks, 1) if checks else None,
-        "outages": len(outages), "short_blips": len(blips),
+        "outages": len(outages), "short_blips": len(blips) + sum(i.get("class") == "BLIP" for i in noise),
+        "backup_feed_failures": sum(i.get("class") == "BACKUP_FAILURE" for i in noise),
     }
     if recoveries:
         total = sum(r["durationS"] for r in recoveries)

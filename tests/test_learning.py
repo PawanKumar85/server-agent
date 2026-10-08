@@ -183,10 +183,8 @@ def test_dynamic_alert_policy_and_feedback(world):
     # Hold down should be clamped between 25 and 45s (24s + 5 = 29s)
     assert profile["hold_down_s"] == 29
 
-    # Check cascade graph
-    assert "ingest1" in policy["cascade_graph"]
-    followers = policy["cascade_graph"]["ingest1"]
-    assert any(f["follower"] == "xcode4" for f in followers)
+    # 24 s outages are blips (outage_class.py): they don't make a cascade (real outages do, see below)
+    assert "ingest1" not in policy["cascade_graph"]
 
     # Check audio tuning
     assert "audio_tuning" in profile
@@ -243,3 +241,13 @@ def test_one_tap_outage_ratings_teach_the_ranking(world):
     assert "network" not in p
     again = learner.rate_outage(k2, "ingest1", True)  # changed the answer: replaces, never double counts
     assert (again["rated"], again["right"]) == (3, 2) and "xcode4" not in learner.priors()
+
+
+def test_real_outages_cascade(world):
+    metrics, learner = world
+    for i in range(12):
+        t_start = at(minutes=i * 30, days=0)
+        t_xcode = (datetime.fromisoformat(t_start) + timedelta(seconds=15)).isoformat()
+        log(metrics, outage("ingest1", t_start, 3), outage("xcode4", t_xcode, 3))
+    followers = learner.get_dynamic_alert_policy()["cascade_graph"]["ingest1"]
+    assert any(f["follower"] == "xcode4" for f in followers)
