@@ -46,7 +46,7 @@ function ndState(n) {
 }
 
 function ndStream(u, h, l) {
-  const tone = h.up === false ? "down" : h.up ? "up" : "idle";
+  const tone = h.ignored ? "ignored" : h.up === false ? "down" : h.up ? "up" : "idle";
   let path = u, host = "";
   try { const x = new URL(u); path = x.pathname + x.search; host = x.host; } catch { /* not a URL */ }
   const target = h.targetS || null, age = h.segmentAgeS;
@@ -60,7 +60,7 @@ function ndStream(u, h, l) {
     : `newest piece ${Math.round(age)} s old${target ? ` · pieces ${target} s` : ""}`;
   return `<li class="nd-stream nd-${tone}">
     <div class="nd-stream-top">
-      <span class="nd-badge nd-badge-${tone}">${h.up === false ? "Failing" : h.up ? "Live" : "Unchecked"}</span>
+      <span class="nd-badge nd-badge-${tone}">${h.ignored ? (h.up === false ? "Ignored · failing" : "Ignored") : h.up === false ? "Failing" : h.up ? "Live" : "Unchecked"}</span>
       ${h.freshness ? `<span class="fresh fresh-${esc(h.freshness)}">${esc(h.freshness)}</span>` : ""}
       <span class="nd-stream-role">${esc(short(l.role || ""))}${l.channel ? ` · ${esc(l.channel)}` : ""}</span>
     </div>
@@ -88,6 +88,9 @@ function ndStream(u, h, l) {
     ${h.up === false && h.detail ? `<div class="nd-stream-err">${esc(h.detail)}</div>` : ""}
     ${h.up === false && h.onsetAt ? `<div class="sub">Stopped ${esc(fmtTime(h.onsetAt))} (±${Math.round(h.onsetPrecisionS || 0)} s, from ${esc(h.onsetMethod || "checks")})</div>` : ""}
     ${h.lastDown && h.up !== false ? `<div class="sub">Last failed ${esc(ndAgo(h.lastDown) || fmtTime(h.lastDown))}</div>` : ""}
+    ${h.up === false || h.ignored ? `<label class="nd-ignore" title="Still checked and kept in history, but it no longer makes this server DOWN or raises alerts">
+      <input type="checkbox" data-ignore-url="${esc(u)}" ${h.ignored ? "checked" : ""}>
+      <span>Ignore this stream${h.ignored ? "" : " (known broken or not in use)"}</span></label>` : ""}
   </li>`;
 }
 
@@ -174,6 +177,33 @@ function muteSwitchHtml(id) {
     </label>`;
   }).join("")}</div>`;
 }
+
+// "Ignore this stream": the server stops counting it from the next check; the panel and cards update now.
+document.addEventListener("change", async e => {
+  const box = e.target.closest("[data-ignore-url]");
+  if (!box) return;
+  const url = box.dataset.ignoreUrl, ignored = box.checked;
+  box.disabled = true;
+  try {
+    const res = await fetch("/api/streams/ignore", {method: "PUT", headers: {"Content-Type": "application/json"},
+                                                    body: JSON.stringify({url, ignored})});
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    for (const n of G.nodes || []) {
+      const h = (n.urlHealth || {})[url];
+      if (h) { if (ignored) h.ignored = true; else delete h.ignored; }
+    }
+    if (typeof toast === "function") toast(ignored ? "warn" : "ok", ignored ? "Stream ignored" : "Stream counted again",
+      ignored ? "Still checked, but it no longer makes its server DOWN or raises alerts." : "It counts towards its server's status again.");
+    if (typeof renderNodeAlerts === "function") renderNodeAlerts();
+    const open = document.querySelector(".node.selected");
+    if (open && open.dataset.node && typeof showDetail === "function") showDetail(open.dataset.node);
+  } catch (err) {
+    box.checked = !ignored;
+    if (typeof toast === "function") toast("bad", "Couldn't change it", err.message);
+  } finally {
+    box.disabled = false;
+  }
+});
 
 document.addEventListener("change", async e => {
   const box = e.target.closest("[data-mute-channel]");

@@ -208,3 +208,55 @@ class TestCheckNode:
     def test_unsupported_check_types(self, check_type):
         with pytest.raises(UnsupportedCheck):
             self.node_check(FakeServer({}), url=[], checkType=check_type)
+
+
+class TestIgnoredStream:
+    """A stream ticked "ignore this stream" is still checked, but never makes its server DOWN."""
+
+    @pytest.fixture(autouse=True)
+    def no_icmp(self, monkeypatch):
+        async def fake_icmp(host):
+            return {"alive": True}
+        monkeypatch.setattr(health, "icmp_diagnostics", fake_icmp)
+
+    def node_check(self, server, ignored, **node):
+        health.ignored_urls = lambda: set(ignored)
+        try:
+            async def go():
+                async with httpx.AsyncClient(transport=httpx.MockTransport(server)) as client:
+                    return await check_node({"id": "n1.example.test", **node}, client, asyncio.Semaphore(8))
+            return asyncio.run(go())
+        finally:
+            health.ignored_urls = lambda: set()
+
+    def test_an_ignored_failing_stream_leaves_its_server_up(self):
+        server = FakeServer({f"{BASE}/a.m3u8": (200, media_playlist())})  # b.m3u8 -> 404 (a dead backup)
+        h = self.node_check(server, [f"{BASE}/b.m3u8"], url=[f"{BASE}/a.m3u8", f"{BASE}/b.m3u8"])
+        assert h.up and h.error is None
+        dead = next(c for c in h.urls if c.url.endswith("b.m3u8"))
+        assert dead.ignored and not dead.up and "404" in dead.detail  # still checked, and it says so
+
+    def test_other_streams_still_count(self):
+        server = FakeServer({})  # both 404
+        h = self.node_check(server, [f"{BASE}/b.m3u8"], url=[f"{BASE}/a.m3u8", f"{BASE}/b.m3u8"])
+        assert not h.up and h.error.startswith("1/2 URLs failing") and "a.m3u8" in h.error and "b.m3u8" not in h.error
+
+
+def test_the_ignore_store(tmp_path):
+    from channel_mute import StreamIgnores
+    s = StreamIgnores(tmp_path / "m.db")
+    url = "https://cloud.example/lokmatbackup/index.m3u8"
+    assert s.urls() == set()
+    s.set(url, True, "backup retired")
+    assert s.urls() == {url} and s.all()[url]["note"] == "backup retired"  # the change shows at once, no cache wait
+    s.set(url, False)
+    assert s.urls() == set()
+
+
+def test_ignored_is_kept_in_url_health_and_skipped_in_root_cause():
+    import json
+    from health import UrlCheck
+    from spider import merge_url_health
+    state = json.loads(merge_url_health(None, [UrlCheck(url="u1", up=False, detail="HTTP 404", ignored=True),
+                                               UrlCheck(url="u2", up=True, detail="ok")], "2026-10-07T10:00:00+00:00"))
+    assert state["u1"]["ignored"] is True and "ignored" not in state["u2"]

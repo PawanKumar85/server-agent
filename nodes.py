@@ -326,7 +326,7 @@ def move_link(driver, old_url: str, new: StreamLink) -> dict:
     except ValueError:
         health = None
     if isinstance(health, dict):
-        health.pop(old_url, None)
+        health = {url: h for url, h in health.items() if url in {l["url"] for l in kept}}
     remove = "".join(f" REMOVE n:`{r}`" for r in drop_labels)
     driver.execute_query(
         f"MATCH (n:{DomainNode.label} {{domain: $d}}) SET n.links = $links, "

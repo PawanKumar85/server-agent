@@ -11,7 +11,7 @@ through /api/stream; POST /api/run starts one now, for all channels or a single 
 from chat_eval import ChatEval
 from history_ai import HistoryAI
 from voice import Voice, voice_store
-from channel_mute import ChannelMutes
+from channel_mute import ChannelMutes, StreamIgnores
 from chat_store import ChatStore
 import asyncio
 import json
@@ -36,6 +36,7 @@ import alertlog
 import backup
 import glitch
 import glitch_model
+import health
 import rca_rank
 import scte
 import text_embedding
@@ -167,6 +168,8 @@ def _pipeline_upstream() -> Dict[str, List[str]]:
 
 learner.upstream_of = _pipeline_upstream
 channel_mutes = ChannelMutes(metrics.path)  # per-channel "ignore alerts" switch (channel_mute.py)
+stream_ignores = StreamIgnores(metrics.path)  # per-stream "ignore this stream" tick: never counts as a failure
+health.ignored_urls = stream_ignores.urls
 latest_ranking: Dict[str, Any] = {"at": None, "groups": []}  # from the last run that found failures
 # Escalation: a server failing TRACEROUTE_THRESHOLD times in a row gets a background traceroute (per-host cooldown).
 tracer = TracerouteManager(driver, on_update=lambda event: hub.publish("traceroute", event))

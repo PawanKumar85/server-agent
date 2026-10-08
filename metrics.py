@@ -147,7 +147,7 @@ class Metrics:
         ts = ts or time.time()
         urls = list(health.urls or [])
         ages = [u.segment_age_s for u in urls if u.up and u.segment_age_s is not None]
-        failing = [u for u in urls if not u.up]
+        failing = [u for u in urls if not u.up and not getattr(u, "ignored", False)]
         category = next((u.category for u in failing if u.category), None)
         with self.lock, self._connect() as db:
             db.execute("INSERT INTO node_checks (ts, node, up, latency_ms, rtt_ms, jitter_ms, loss, segment_age_s, "
@@ -239,6 +239,8 @@ class Metrics:
         """One check of one URL through its alert: SEGMENT_HIGHS_TO_WARN high checks in a row raise it; it clears
         below the clear line. How each warning ends tunes that URL's sensitivity k: cleared on its own → less
         sensitive (it was noise); the stream failed while warned → more sensitive (it was a real early sign)."""
+        if getattr(u, "ignored", False):
+            return  # an ignored stream raises no early warning either
         row = db.execute("SELECT * FROM segment_alerts WHERE url = ?", (u.url,)).fetchone()
         st = dict(row) if row else {"url": u.url, "node": node, "k": SEGMENT_K, "active": 0, "since": None, "highs": 0,
                                     "raised": 0, "cleared_alone": 0, "before_outage": 0, "too_sensitive": 0}

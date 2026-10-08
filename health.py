@@ -10,7 +10,7 @@ import os
 import time
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Set, Tuple
 
 import httpx
 import m3u8
@@ -49,6 +49,23 @@ class UrlCheck(BaseModel):
     discontinuities: int = 0  # #EXT-X-DISCONTINUITY count in media playlist
     cdn_cache: Optional[str] = None  # HIT / MISS / EXPIRED from X-Cache or CF-Cache-Status
     server_hdr: Optional[str] = None  # Server response header (e.g. nginx/1.24)
+    ignored: bool = False  # the operator ticked "ignore this stream": still checked, never counts as a failure
+
+
+# URLs the operator chose to ignore (channel_mute.StreamIgnores, set by the server); none by default.
+ignored_urls: Callable[[], Set[str]] = lambda: set()
+
+
+def failing(checks) -> list:
+    """The checks that count against their server: failed and not ignored."""
+    return [c for c in checks if not c.up and not c.ignored]
+
+
+def failure_text(checks) -> Optional[str]:
+    """A server's error from its URL checks (None when nothing that counts is failing)."""
+    failed = failing(checks)
+    return (f"{len(failed)}/{len(checks)} URLs failing: " + "; ".join(f"{c.url} {c.detail}" for c in failed)
+            if failed else None)
 
 
 class NodeHealth(BaseModel):
@@ -376,14 +393,11 @@ async def check_node(node: dict, client: httpx.AsyncClient, sem: asyncio.Semapho
         checks = await asyncio.gather(*(check_http_url(client, sem, u, check_type == "HTTPS") for u in urls))
     diag = await diag_task
 
-    failed = [c for c in checks if not c.up]
+    ignored = ignored_urls() if urls else set()
+    for c in checks:
+        c.ignored = c.url in ignored
     latencies = [c.latency_ms for c in checks if c.latency_ms is not None]
-    if not urls:
-        error = "NO_URLS"
-    elif failed:
-        error = f"{len(failed)}/{len(checks)} URLs failing: " + "; ".join(f"{c.url} {c.detail}" for c in failed)
-    else:
-        error = None
+    error = "NO_URLS" if not urls else failure_text(checks)
     return NodeHealth(
         node_id=node_id, check_type=check_type, up=error is None,
         latency_ms=max(latencies) if latencies else None,  # worst URL

@@ -104,7 +104,7 @@ function agentVerdict(nodeId, url) {
   }
   if (a.hostProblem) return {verdict: "confirms", text: `Confirmed from inside the server: ${a.hostProblem}.`};
   const n = byId[nodeId];
-  const failingUrls = url ? [url] : Object.entries((n && n.urlHealth) || {}).filter(([, h]) => h.up === false).map(([u]) => u);
+  const failingUrls = url ? [url] : Object.entries((n && n.urlHealth) || {}).filter(([, h]) => isFailing(h)).map(([u]) => u);
   if (!a.hlsUrl || !failingUrls.includes(a.hlsUrl)) return null;  // it watches another stream: no say on this one
   const age = a.hlsAge != null ? ` (newest piece ${Math.round(a.hlsAge)} s old)` : "";
   if (["STALE", "DOWN", "DEGRADED"].includes(a.hlsStatus)) {
@@ -141,8 +141,8 @@ function cardAlertRaw(nodeId, url) {
   const n = byId[nodeId];
   if (!n) return null;
   const health = n.urlHealth || {};
-  const failing = url ? [health[url] || {}].filter(h => h.up === false)
-                      : Object.values(health).filter(h => h.up === false);
+  const failing = url ? [health[url] || {}].filter(h => isFailing(h))
+                      : Object.values(health).filter(h => isFailing(h));
   const group = nodeAlerts.groups.find(g => g.nodes.includes(nodeId));
   const top = group && group.ranking[0];
 
@@ -287,14 +287,14 @@ function getConfirmedOrigins() {
     if (!ranking.length) continue;
     const top = ranking[0];
     const n = byId[top.node];
-    const isDown = (n && n.status === "DOWN") || Object.values((n && n.urlHealth) || {}).some(h => h.up === false);
+    const isDown = (n && n.status === "DOWN") || Object.values((n && n.urlHealth) || {}).some(h => isFailing(h));
     if (!isDown && (top.score || 0) < 0.3) continue;
 
     const labels = (n && n.labels) || [];
     const isBackupOnly = labels.includes("BackupLink") && !labels.includes("MainInput");
     const victims = ranking.slice(1).map(r => r.node).filter(vid => {
       const vn = byId[vid];
-      return vn && (vn.status === "DOWN" || Object.values(vn.urlHealth || {}).some(h => h.up === false));
+      return vn && (vn.status === "DOWN" || Object.values(vn.urlHealth || {}).some(h => isFailing(h)));
     });
 
     // Angle 1: BackupLink without downstream victims is normal standby, never an outage origin
@@ -360,7 +360,7 @@ function getConfirmedOrigins() {
       const isBackupOnly = labels.includes("BackupLink") && !labels.includes("MainInput");
       if (isBackupOnly) continue;
 
-      const failingUrls = Object.values(n.urlHealth || {}).filter(h => h.up === false);
+      const failingUrls = Object.values(n.urlHealth || {}).filter(h => isFailing(h));
       if (n.status === "DOWN" || failingUrls.length) {
         const earliestOnset = failingUrls.map(h => h.onsetAt).filter(Boolean).sort()[0];
         const onsetMs = earliestOnset ? Date.parse(earliestOnset.replace(/(\.\d{3})\d+/, "$1")) : 0;
@@ -466,7 +466,7 @@ function channelOf(id) {
 function plainOutage(orig) {
   const n = byId[orig.node] || {};
   const server = alertShort(orig.node);
-  const failing = Object.entries(n.urlHealth || {}).filter(([, h]) => h.up === false);
+  const failing = Object.entries(n.urlHealth || {}).filter(([, h]) => isFailing(h));
   const linkChannel = url => ((n.links || []).find(l => l.url === url) || {}).channel || channelOf(String(url).replace(/\/[^/]*$/, ""));
   const failingChannels = [...new Set(failing.map(([u]) => linkChannel(u)).filter(Boolean))];
   const offAir = [...new Set((orig.victims || []).map(channelOf).filter(Boolean))];

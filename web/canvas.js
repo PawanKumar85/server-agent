@@ -62,7 +62,7 @@ function renderGraph(graph) {
   for (const n of G.nodes) {
     for (const cid of splitCards[n.id] || []) {  // per-channel Final cards
       const info = cardInfo[cid], p = pos[cid], h = (n.urlHealth || {})[info.url] || {};
-      const st = h.up === false ? "DOWN" : h.up ? "UP" : n.status;
+      const st = isFailing(h) ? "DOWN" : h.up || h.ignored ? "UP" : n.status;
       const isRoot = roots.has(n.id);
       const el = document.createElement("div");
       el.className = "node" + (isRoot ? " root origin-root" : "");
@@ -91,7 +91,7 @@ function renderGraph(graph) {
     el.className = "node" + (isRoot ? " root origin-root" : "");
     el.style.cssText = `left:${p.x}px;top:${p.y}px;width:${W}px;height:${H}px`;
     el.dataset.node = n.id;
-    const urls = (n.urls || []).length, down = Object.values(n.urlHealth || {}).filter(h => h.up === false).length;
+    const urls = (n.urls || []).length, down = Object.values(n.urlHealth || {}).filter(isFailing).length;
     el.innerHTML = `
       <div class="port in"></div><div class="port out"></div>
       <div class="icon" style="background:var(--${primary})">${esc(short(primary)[0] || "?")}</div>
@@ -133,6 +133,7 @@ function renderGraph(graph) {
   renderLegend(); renderDbPanel(); drawEdges(); placeSpiders(); renderHeatmap();
   if (search.active) runSearch(search.q); else applyFocus();  // a search re-runs on the new graph
   if (typeof renderNodeAlerts === "function") renderNodeAlerts();
+  if (typeof renderDirectLinks === "function") renderDirectLinks();
   if (!fitted && canvas.clientWidth) fit();
 }
 
@@ -314,7 +315,7 @@ canvas.addEventListener("wheel", e => {
 }, {passive: false});
 let pan = null, drag = null;
 canvas.addEventListener("mousedown", e => {
-  if (e.target.closest(".node, #detail, #toolbar, #canvas-top, #canvas-search-box, #db-panel, #log, #heatmap-panel")) return;
+  if (e.target.closest(".node, #detail, #toolbar, #canvas-top, #canvas-search-box, #db-panel, #direct-panel, #log, #heatmap-panel")) return;
   pan = {x: e.clientX - view.x, y: e.clientY - view.y}; canvas.classList.add("panning");
 });
 function startDrag(e, id) { e.stopPropagation(); drag = {id, sx: e.clientX, sy: e.clientY, x: pos[id].x, y: pos[id].y, moved: false}; }
@@ -462,7 +463,7 @@ const toggleDbPanel = () => {
 };
 $(".toggle", dbPanel).onclick = toggleDbPanel;
 $("header", dbPanel).onclick = toggleDbPanel;
-canvas.addEventListener("dblclick", e => { if (!e.target.closest(".node, #db-panel, #detail, #heatmap-panel")) { focus = null; applyFocus(); } });
+canvas.addEventListener("dblclick", e => { if (!e.target.closest(".node, #db-panel, #direct-panel, #detail, #heatmap-panel")) { focus = null; applyFocus(); } });
 
 // ---------- Hover: highlight a node's own links (no pop-up) ----------
 let hover = null, hoverNodes = new Set(), hoverEdges = new Set();

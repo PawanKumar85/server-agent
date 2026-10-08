@@ -366,3 +366,15 @@ class TestDeduplicationAndAdaptive:
         finally:
             loop.close()
 
+
+
+def test_a_url_no_longer_checked_leaves_url_health():
+    """The sakshitv ghost: its link moved to another server, but its old DOWN entry stayed on cloud for days."""
+    import json
+    from health import UrlCheck
+    from spider import merge_url_health
+    now = "2026-10-08T10:00:00+00:00"
+    before = merge_url_health(None, [UrlCheck(url="old", up=False, detail="HTTP 404"),
+                                     UrlCheck(url="keep", up=True, detail="ok")], now)
+    after = json.loads(merge_url_health(before, [UrlCheck(url="keep", up=True, detail="ok")], now))
+    assert set(after) == {"keep"}

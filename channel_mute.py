@@ -9,6 +9,7 @@ from typing import Dict, List, Optional
 
 SCHEMA = """CREATE TABLE IF NOT EXISTS channel_mutes (
     channel TEXT PRIMARY KEY, muted INTEGER NOT NULL DEFAULT 0, since REAL, note TEXT)"""
+IGNORE_SCHEMA = """CREATE TABLE IF NOT EXISTS stream_ignores (url TEXT PRIMARY KEY, since REAL, note TEXT)"""
 
 
 class ChannelMutes:
@@ -43,3 +44,47 @@ class ChannelMutes:
                        "ON CONFLICT(channel) DO UPDATE SET muted = excluded.muted, since = excluded.since, "
                        "note = excluded.note", (channel, int(muted), time.time() if muted else None, note))
         return {"channel": channel, "muted": bool(muted), "since": time.time() if muted else None, "note": note}
+
+
+class StreamIgnores:
+    """Per-stream "ignore this stream" tick (default off), for one URL that is known broken or not in use (a dead
+    backup): it is still checked and its history kept, but it no longer counts against its server (status, outages,
+    alerts, early warnings, root cause). Other streams of the same channel and server are unaffected."""
+
+    CACHE_S = 5.0  # read on every server check: keep the set in memory between changes
+
+    def __init__(self, path: str):
+        self.path = str(path)
+        self.lock = threading.Lock()
+        self._cache: Optional[tuple] = None  # (read at, {url: {"since", "note"}})
+        with self._connect() as db:
+            db.execute(IGNORE_SCHEMA)
+
+    def _connect(self) -> sqlite3.Connection:
+        db = sqlite3.connect(self.path, timeout=10)
+        db.row_factory = sqlite3.Row
+        return db
+
+    def all(self) -> Dict[str, dict]:
+        """url -> {"since", "note"} for every ignored stream."""
+        cached = self._cache
+        if cached and time.monotonic() - cached[0] < self.CACHE_S:
+            return cached[1]
+        with self._connect() as db:
+            rows = {r["url"]: {"since": r["since"], "note": r["note"]}
+                    for r in db.execute("SELECT url, since, note FROM stream_ignores")}
+        self._cache = (time.monotonic(), rows)
+        return rows
+
+    def urls(self) -> set:
+        return set(self.all())
+
+    def set(self, url: str, ignored: bool, note: Optional[str] = None) -> dict:
+        with self.lock, self._connect() as db:
+            if ignored:
+                db.execute("INSERT INTO stream_ignores (url, since, note) VALUES (?, ?, ?) ON CONFLICT(url) DO UPDATE "
+                           "SET note = excluded.note", (url, time.time(), note))
+            else:
+                db.execute("DELETE FROM stream_ignores WHERE url = ?", (url,))
+            self._cache = None
+        return {"url": url, "ignored": bool(ignored), "note": note}

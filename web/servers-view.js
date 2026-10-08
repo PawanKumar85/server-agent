@@ -30,7 +30,7 @@ function scoreServer(n) {
   const reasons = [];
   let score = 0;
   const health = Object.values(n.urlHealth || {});
-  const failing = health.filter(h => h.up === false);
+  const failing = health.filter(h => isFailing(h));
   const down = n.status === "DOWN";
   if (down) {
     score += 45;

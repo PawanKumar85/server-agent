@@ -27,7 +27,7 @@ from dotenv import load_dotenv
 from neo4j import GraphDatabase
 from pydantic import BaseModel
 
-from health import STALE_AFTER_TARGET_DURATIONS, NodeHealth, UrlCheck, check_node, http_client
+from health import STALE_AFTER_TARGET_DURATIONS, NodeHealth, UrlCheck, check_node, failing, failure_text, http_client
 import rca_rank
 from metrics import store
 from nodes import load_json_list
@@ -362,10 +362,12 @@ def apply_clock_offset(previous: Optional[str], checks: List[UrlCheck]) -> List[
 def merge_url_health(previous: Optional[str], checks: List[UrlCheck], now: str) -> Optional[str]:
     """Per-URL health as a JSON object: {up, detail, lastDown, category, freshness, segmentAgeS, targetS,
     seq: {variant: {n, since}}}. lastDown is when the URL last went UP -> DOWN; `since` is when that media
-    sequence number was first seen."""
+    sequence number was first seen. Only the URLs checked now are kept: a URL removed from the server (a link moved
+    or deleted) would otherwise stay in its last state forever, a ghost outage nobody checks any more."""
     if not checks:
         return None
-    state = _state(previous)
+    checked = {c.url for c in checks}
+    state = {url: h for url, h in _state(previous).items() if url in checked}
     for check in checks:
         old = state.get(check.url, {})
         went_down = not check.up and old.get("up", True)
@@ -382,6 +384,7 @@ def merge_url_health(previous: Optional[str], checks: List[UrlCheck], now: str) 
             "up": check.up,
             "detail": check.detail,
             "lastDown": now if went_down else old.get("lastDown"),
+            **({"ignored": True} if check.ignored else {}),  # the dashboard shows it, but doesn't count it
             **{k: v for k, v in extra.items() if v not in (None, {}, [])},  # only what this check measured
         }
     return json.dumps(state, sort_keys=True)
@@ -453,6 +456,8 @@ def correlate(chain_rows: List[dict], node_id: str, failing: List[UrlCheck], now
                              "checkedAt": now}
                 else:
                     h = health.get(link["url"], {})
+                    if h.get("ignored"):
+                        continue  # the operator set this stream aside: it says nothing about where the fault is
                     entry = {"up": h.get("up", True) is not False, "detail": h.get("detail"),
                              "freshness": h.get("freshness"), "segmentAgeS": h.get("segmentAgeS"),
                              "checkedAt": row["lastPing"]}
@@ -501,7 +506,7 @@ def verdict(channel: str, node_id: str, chain: List[dict]) -> dict:
 
 
 def incident_category(checks: List[UrlCheck]) -> Optional[str]:
-    failed = [c.category or "UNKNOWN" for c in checks if not c.up]
+    failed = [c.category or "UNKNOWN" for c in failing(checks)]
     return max(set(failed), key=failed.count) if failed else None
 
 
@@ -642,16 +647,12 @@ class HealthRecorder:
                 previous_urls = rows[node_id]["urlHealth"] if node_id in rows else None
                 # Timestamps that only look old because the source clock runs late, while the stream moves on.
                 if apply_clock_offset(previous_urls, health.urls):
-                    failed = [c for c in health.urls if not c.up]
-                    health.up = not failed
-                    health.error = (f"{len(failed)}/{len(health.urls)} URLs failing: " + "; ".join(
-                        f"{c.url} {c.detail}" for c in failed)) if failed else None
-                # A playlist that answers but whose media sequence stopped moving is down too.
-                if apply_sequence_stall(previous_urls, health.urls, now_dt) and health.up:
-                    failed = [c for c in health.urls if not c.up]
+                    health.error = failure_text(health.urls)
+                    health.up = health.error is None
+                # A playlist that answers but whose media sequence stopped moving is down too (unless ignored).
+                if apply_sequence_stall(previous_urls, health.urls, now_dt) and health.up and failing(health.urls):
                     health.up = False
-                    health.error = f"{len(failed)}/{len(health.urls)} URLs failing: " + "; ".join(
-                        f"{c.url} {c.detail}" for c in failed)
+                    health.error = failure_text(health.urls)
                 statuses[node_id] = "UP" if health.up else "DOWN"
                 ages = [c.segment_age_s for c in health.urls if getattr(c, "segment_age_s", None) is not None]
                 min_age = min(ages) if ages else None
@@ -712,16 +713,16 @@ class HealthRecorder:
         }
         entry = None
         if not health.up and fails >= INCIDENT_AFTER_FAILURES and not is_open:
-            failing = [c for c in health.urls if not c.up]
+            failed = failing(health.urls)
             needles = {f'"channel": "{l["channel"]}"' for l in load_json_list(state_row.get("links"))
-                       if l["url"] in {c.url for c in failing}}
+                       if l["url"] in {c.url for c in failed}}
             chain_rows = [dict(r) for needle in needles for r in tx.run(CHANNEL_CHAIN, needle=needle)]
             unique = list({r["node"]: r for r in chain_rows}.values())
             entry = {"type": "OUTAGE", "from": "UP", "to": "DOWN", **base,
                      "category": incident_category(health.urls),
                      "failedUrls": [{"url": c.url, "category": c.category, "detail": c.detail,
-                                     "freshness": c.freshness, "segmentAgeS": c.segment_age_s} for c in failing],
-                     "correlation": correlate(unique, node_id, failing, now)}
+                                     "freshness": c.freshness, "segmentAgeS": c.segment_age_s} for c in failed],
+                     "correlation": correlate(unique, node_id, failed, now)}
             tx.run("MATCH (n:Domain {domain: $id}) SET n.incidentOpen = true", id=node_id)
         elif not health.up and fails == self.alert_threshold and self.alert_threshold > INCIDENT_AFTER_FAILURES:
             entry = {"type": "ESCALATED", "from": "DOWN", "to": "DOWN", **base, "category": incident_category(health.urls)}
@@ -1326,9 +1327,9 @@ def node_states(driver, node_ids: List[str]) -> Dict[str, dict]:
     """node -> {up, onsetAt (earliest among its failing URLs), onsetPrecisionS, category}, for rca_rank."""
     out = {}
     for r in driver.execute_query(NODE_STATES, ids=node_ids).records:
-        failing = [h for h in _state(r["urlHealth"]).values() if h.get("up") is False]
-        onset = min(failing, key=lambda h: h.get("onsetAt") or "~", default={})
-        categories = [h.get("category") for h in failing if h.get("category")]
+        down = [h for h in _state(r["urlHealth"]).values() if h.get("up") is False and not h.get("ignored")]
+        onset = min(down, key=lambda h: h.get("onsetAt") or "~", default={})
+        categories = [h.get("category") for h in down if h.get("category")]
         out[r["node"]] = {"up": r["status"] != "DOWN", "onsetAt": onset.get("onsetAt"),
                           "onsetPrecisionS": onset.get("onsetPrecisionS"), "onsetMethod": onset.get("onsetMethod"),
                           "category": max(set(categories), key=categories.count) if categories else None}

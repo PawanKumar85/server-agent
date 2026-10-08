@@ -209,6 +209,12 @@ document.addEventListener("click", e => {
 });
 
 // ---------- Stream Stability & Flapping Analyzer ----------
+// A stream counts as failing unless the operator ticked "ignore this stream" (channel_mute.StreamIgnores).
+function isFailing(h) {
+  return !!h && h.up === false && !h.ignored;
+}
+window.isFailing = isFailing;
+
 function analyzeNodeStability(n) {
   if (!n) return null;
   const log = n.log || [];
