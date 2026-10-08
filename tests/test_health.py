@@ -260,3 +260,21 @@ def test_ignored_is_kept_in_url_health_and_skipped_in_root_cause():
     state = json.loads(merge_url_health(None, [UrlCheck(url="u1", up=False, detail="HTTP 404", ignored=True),
                                                UrlCheck(url="u2", up=True, detail="ok")], "2026-10-07T10:00:00+00:00"))
     assert state["u1"]["ignored"] is True and "ignored" not in state["u2"]
+
+
+def test_checks_passed_leaves_out_ignored_streams(tmp_path):
+    """Ticking a dead backup takes back the failures it caused, not just future ones."""
+    from health import NodeHealth, UrlCheck
+    from metrics import Metrics
+    m = Metrics(tmp_path / "m.db")
+    main, backup = "https://cloud.example/main.m3u8", "https://cloud.example/backup.m3u8"
+    for i in range(10):  # the backup fails every check; the main fails twice
+        main_up = i not in (3, 7)
+        urls = [UrlCheck(url=main, up=main_up, detail="ok" if main_up else "HTTP 404"),
+                UrlCheck(url=backup, up=False, detail="HTTP 404")]
+        m.record("cloud.example", NodeHealth(node_id="cloud.example", check_type="HLS", up=False, urls=urls), ts=1_000 + i)
+    m.PASSED_CACHE_S = 0
+    every = m.checks_passed({main, backup}, since_s=10**10)["cloud.example"]
+    assert every == {"checks": 10, "failed": 10}
+    without = m.checks_passed({main}, since_s=10**10)["cloud.example"]  # the backup ticked "ignore"
+    assert without == {"checks": 10, "failed": 2}

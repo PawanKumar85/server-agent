@@ -104,6 +104,8 @@ class Metrics:
         self._url_ids: Dict[str, int] = {}
         self.alert_log = None  # alertlog.AlertLog, set by the server: incidents also go into the one alert log
         self._compacted_at = 0.0
+        self._passed: Optional[tuple] = None  # (computed at, counted urls, result), see checks_passed
+        self._passed_lock = threading.Lock()
         with self._connect() as db:
             db.execute("PRAGMA journal_mode=WAL")
             db.execute("PRAGMA synchronous=NORMAL")  # safe with WAL, and far fewer disk syncs per check
@@ -389,6 +391,31 @@ class Metrics:
         with self._connect() as db:
             rows = db.execute("SELECT * FROM node_checks WHERE node = ? ORDER BY ts DESC LIMIT ?", (node, limit)).fetchall()
         return [dict(r) for r in reversed(rows)]
+
+    PASSED_CACHE_S = 60
+
+    def checks_passed(self, counted: set, since_s: Optional[float] = None) -> Dict[str, dict]:
+        """node -> {"checks", "failed"} over the kept history (RETENTION_DAYS), counting a check as failed only when a
+        URL in `counted` failed in it: a stream the operator ignores, or one no longer on the server (a link moved
+        away), doesn't lower its server's checks-passed, including for the failures it caused before. Cached a minute
+        (a new ignore changes `counted`, so it shows at once)."""
+        key = frozenset(counted)
+        with self._passed_lock:
+            cached = self._passed
+            if cached and cached[1] == key and time.monotonic() - cached[0] < self.PASSED_CACHE_S:
+                return cached[2]
+            since = time.time() - (since_s if since_s is not None else RETENTION_DAYS * 86400)
+            with self._connect() as db:
+                rows = db.execute("""
+                    SELECT node, SUM(n) AS checks, SUM(MIN(f, n)) AS failed FROM (
+                        SELECT u.node AS node, r.ts, MAX(r.n) AS n,
+                               MAX(CASE WHEN u.url IN (SELECT value FROM json_each(?)) THEN r.fails ELSE 0 END) AS f
+                        FROM url_check_rows r JOIN urls u ON u.id = r.url_id WHERE r.ts >= ?
+                        GROUP BY u.node, r.ts)
+                    GROUP BY node""", (json.dumps(sorted(key)), since)).fetchall()
+            result = {r["node"]: {"checks": r["checks"], "failed": r["failed"]} for r in rows}
+            self._passed = (time.monotonic(), key, result)
+            return result
 
     def history(self, node: str, since_s: float = 3600) -> List[dict]:
         with self._connect() as db:

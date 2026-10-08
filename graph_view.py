@@ -8,7 +8,7 @@ crossings); the canvas itself is self-contained HTML/SVG/JS for
 import json
 from typing import Dict, List, Optional
 
-from metrics import store
+from metrics import RETENTION_DAYS, store
 from heatmap import generate_3d_heatmap_base64
 from nodes import current_topology, load_json_list
 
@@ -35,6 +35,16 @@ def fetch_graph(driver, incidents=None) -> dict:
             """
         ).records
     ]
+    # Checks passed from the kept history, without ignored streams or ones no longer on the server (the lifetime
+    # counters on the node can't take a stream back out). Servers with no stream history keep the counters.
+    import health
+    counted = {u for n in nodes for u in (n["urls"] or [])} - health.ignored_urls()
+    passed = incidents.checks_passed(counted)
+    for n in nodes:
+        p = passed.get(n["id"])
+        if p and p["checks"]:
+            n["pingCount"], n["failedCount"] = p["checks"], p["failed"]
+            n["checksWindowDays"] = RETENTION_DAYS
     for n in nodes:
         n["links"] = load_json_list(n["links"])
         try:
@@ -50,7 +60,7 @@ def fetch_graph(driver, incidents=None) -> dict:
                 entry["detail"] = h["detail"]
             if h.get("lastDown"):
                 entry["lastDown"] = h["lastDown"]
-            for key in ("category", "freshness", "segmentAgeS", "targetS", "bitrates", "resolutions", "cdn_cache", "server_hdr", "discontinuities"):
+            for key in ("ignored", "category", "freshness", "segmentAgeS", "targetS", "bitrates", "resolutions", "cdn_cache", "server_hdr", "discontinuities"):
                 val = h.get(key)
                 if val is not None and val != [] and val != "":
                     entry[key] = val

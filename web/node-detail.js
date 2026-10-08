@@ -324,7 +324,7 @@ function showDetail(id) {
       <a class="btn small" href="/api/report.html?node=${encodeURIComponent(id)}" target="_blank" rel="noopener" title="Complete report on this node: charts and every stored field">📄 Report</a>
     </div>
     <div class="nd-stats">
-      ${stat("Checks passed", uptime == null ? "—" : `${uptime.toFixed(1)}%`, pings ? `${failed.toLocaleString()} of ${pings.toLocaleString()} failed` : "", uptime != null && uptime < 95 ? "warn" : "")}
+      ${stat("Checks passed", uptime == null ? "—" : `${uptime.toFixed(1)}%`, pings ? `${failed.toLocaleString()} of ${pings.toLocaleString()} failed${n.checksWindowDays ? `, last ${n.checksWindowDays} days (ignored streams not counted)` : ""}` : "", uptime != null && uptime < 95 ? "warn" : "")}
       ${stat("Response time", n.latency != null ? `${Math.round(n.latency)} ms` : "—", "HTTP latency")}
       ${stat("Last check", ndAgo(n.lastPing) || "—", n.consecutiveFailures ? `${n.consecutiveFailures} failed in a row` : "", n.consecutiveFailures ? "bad" : "")}
       ${stat("Last recovery", ndAgo(n.lastRecovery) || "never", "")}
