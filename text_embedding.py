@@ -102,7 +102,7 @@ def model():
 
 
 def _embed_new(texts: List[str]) -> np.ndarray:
-    vectors = np.asarray(list(model().embed(list(texts))), dtype="float32")
+    vectors = np.asarray(list(model().embed(list(texts), batch_size=32)), dtype="float32")  # bounded memory
     norms = np.linalg.norm(vectors, axis=1, keepdims=True)
     return vectors / np.where(norms == 0, 1, norms)
 

@@ -31,6 +31,7 @@ import numpy as np
 
 IST = timezone(timedelta(hours=5, minutes=30))
 CASE_SYNC_S = 60  # rebuild cases from the incident log at most this often
+CASE_BATCH = 64  # cases embedded and saved per step (bounded memory, resumable)
 PATTERN_CACHE_S = 300
 TOGETHER_S = 180  # outages starting this close together count as failing together
 TOGETHER_LIFT = 2.0  # ...but only when that happens at least this many times more often than chance
@@ -170,13 +171,17 @@ class Learner:
                     new.append(self._case(r["node"], json.loads(start["entry"]), json.loads(r["entry"])))
         if not new:
             return 0
-        vecs = self._vectors([c["text"] for c in new])
-        with self.lock, self._connect() as db:
-            db.executemany(
-                "INSERT OR IGNORE INTO cases (node, opened, closed, category, verdict, root_cause, duration_s, "
-                "channels, text, vec, onset, class) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-                [(c["node"], c["opened"], c["closed"], c["category"], c["verdict"], c["root_cause"], c["duration_s"],
-                  json.dumps(c["channels"]), c["text"], v, c["onset"], c["class"]) for c, v in zip(new, vecs)])
+        # In small batches, each saved as it's done: embedding thousands of cases in one go (a full rebuild) took the
+        # app past 4.8 GB and the whole server out of memory; a restart now continues where the last batch ended.
+        for i in range(0, len(new), CASE_BATCH):
+            chunk = new[i:i + CASE_BATCH]
+            vecs = self._vectors([c["text"] for c in chunk])
+            with self.lock, self._connect() as db:
+                db.executemany(
+                    "INSERT OR IGNORE INTO cases (node, opened, closed, category, verdict, root_cause, duration_s, "
+                    "channels, text, vec, onset, class) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                    [(c["node"], c["opened"], c["closed"], c["category"], c["verdict"], c["root_cause"], c["duration_s"],
+                      json.dumps(c["channels"]), c["text"], v, c["onset"], c["class"]) for c, v in zip(chunk, vecs)])
         self._patterns = None
         return len(new)
 
