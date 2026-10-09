@@ -363,7 +363,7 @@ def alerts(hours: int = Query(24, ge=1, le=14 * 24)):
 def scte_breaks():
     """SCTE-35 ad breaks per channel (last 7 days): the learned pattern, when the next one is expected, problems
     (stuck, overrun, missing, dropped between Main and Final) and the recent breaks."""
-    return {"channels": srv.ad_breaks(), "retentionDays": srv.scte.RETENTION_DAYS}
+    return {"channels": srv.ad_breaks(), "enabled": srv.SCTE_ENABLED, "retentionDays": srv.scte.RETENTION_DAYS}
 
 
 @router.get("/api/backups")

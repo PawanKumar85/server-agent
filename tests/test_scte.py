@@ -175,3 +175,11 @@ def test_duplicate_tags_are_one_break_and_back_to_back_breaks_close_each_other(t
     first, second = sorted(s.breaks(url=url, since_s=10 ** 10), key=lambda b: b["start"])
     assert len(s.breaks(url=url, since_s=10 ** 10)) == 2
     assert (first["status"], first["actual_s"]) == ("CLOSED", 96) and (second["status"], second["actual_s"]) == ("CLOSED", 100)
+
+
+def test_ad_break_tracking_is_off_by_default():
+    """SCTE scanning was about a third of the app's CPU: off unless SCTE=1. Nothing scans or summarises."""
+    import server
+    assert server.SCTE_ENABLED is False
+    assert server.glitch_probe.scte is None  # the probe neither records Final markers nor scans the Mains
+    assert server.ad_breaks() == []

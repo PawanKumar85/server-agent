@@ -497,6 +497,8 @@ def main_streams() -> List[dict]:
 
 
 def ad_breaks() -> List[dict]:
+    if not SCTE_ENABLED:
+        return []
     return shared("ad_breaks", 30, _ad_breaks)
 
 
@@ -574,7 +576,11 @@ def backfill_alerts() -> int:
 
 
 scte_store = scte.ScteStore(metrics.path)
-glitch_probe = glitch.GlitchProbe(metrics.path, scte_store=scte_store)
+# SCTE-35 ad-break tracking (scanning every Main stream for markers, the ad-break summary, AD_STUCK / AD_OVERRUN
+# alerts) is switched off by default to save CPU: the scanning alone was about a third of the app's busy time.
+# SCTE=1 in .env turns it back on; ad breaks already recorded stay readable.
+SCTE_ENABLED = os.environ.get("SCTE", "0").lower() in ("1", "true", "yes", "on")
+glitch_probe = glitch.GlitchProbe(metrics.path, scte_store=scte_store if SCTE_ENABLED else None)
 glitch_probe.on_alert = lambda kind, node, channel, detail, source, ts: alert_log.add(kind, node, channel, detail, source, ts)
 glitch_monitor = glitch.GlitchMonitor(glitch_probe, final_streams, lambda: scheduler.enabled, hub.publish,
                                       mains=main_streams, retrain=train_glitch_model if GLITCH_FORECAST else None)
