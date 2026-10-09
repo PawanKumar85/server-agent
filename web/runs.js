@@ -76,7 +76,10 @@ function prepareWalk(firstEvents, finals = null, quiet = false) {
   const scope = finals ? new Set(finals.flatMap(f => [...chainOf(f).nodes])) : null;
   for (const n of G.nodes) {
     if (scope && !scope.has(n.id)) continue;
-    live[n.id] = null; setDot(n.id, null, true); setStats(n.id, "waiting for spider…");
+    // Keep each card's live state (dot, ping, URLs) until the spider actually checks it: a healthy channel's spider
+    // only glances at its Main, so a reset here left the whole path on "waiting for spider…" between runs.
+    live[n.id] = n.status === "DOWN" ? "DOWN" : n.status === "UP" ? "UP" : null;
+    setDot(n.id, n.status, false); setStats(n.id, null);
     cardsOf(n.id).forEach(el => el.classList.remove("root", "checking", "peek", "flash-ok", "flash-fail"));
   }
   for (const s of G.spiders) {
