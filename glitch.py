@@ -84,7 +84,11 @@ class GlitchProbe:
 
     def __init__(self, path: str, client: Optional[httpx.Client] = None, scte_store=None):
         self.path = str(path)
-        self.client = client or httpx.Client(headers={"User-Agent": "StreamGraph-GlitchProbe/1"})
+        # Connections kept between the once-a-minute visits: httpx closes idle ones after 5 s by default, so every
+        # visit paid a new DNS lookup and TLS handshake (about a tenth of the app's CPU).
+        self.client = client or httpx.Client(headers={"User-Agent": "StreamGraph-GlitchProbe/1"},
+                                             limits=httpx.Limits(max_connections=64, max_keepalive_connections=64,
+                                                                 keepalive_expiry=150))
         self.scte = scte_store  # scte.ScteStore: ad-break markers seen in the same playlist read
         self.on_alert: Optional[Callable[..., Any]] = None  # alertlog: (kind, node, channel, detail, source, ts)
         self.state: Dict[str, dict] = {}

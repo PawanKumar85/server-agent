@@ -411,7 +411,7 @@ class Metrics:
             rows = db.execute("SELECT * FROM node_checks WHERE node = ? ORDER BY ts DESC LIMIT ?", (node, limit)).fetchall()
         return [dict(r) for r in reversed(rows)]
 
-    PASSED_CACHE_S = 60
+    PASSED_CACHE_S = 300  # a 14-day percentage barely moves in 5 minutes; a new ignore tick still shows at once
 
     def checks_passed(self, counted: set, since_s: Optional[float] = None) -> Dict[str, dict]:
         """node -> {"checks", "failed"} over the kept history (RETENTION_DAYS), counting a check as failed only when a
@@ -544,9 +544,17 @@ class Metrics:
         return {"slots": slots, "slotSeconds": slot_s, "nodes": bucketed(node_rows, lambda r: r["node"]),
                 "channels": channels}
 
+    NODES_CACHE_S = 300
+
     def nodes(self) -> List[str]:
+        """Every node with checks on record. Cached: it scans every check row, and servers rarely come and go."""
+        cached = getattr(self, "_nodes_cache", None)
+        if cached and time.monotonic() - cached[0] < self.NODES_CACHE_S:
+            return list(cached[1])
         with self._connect() as db:
-            return [r[0] for r in db.execute("SELECT DISTINCT node FROM node_checks")]
+            found = [r[0] for r in db.execute("SELECT DISTINCT node FROM node_checks")]
+        self._nodes_cache = (time.monotonic(), found)
+        return list(found)
 
     def anomalies(self, node: str) -> Dict[str, Any]:
         """Per metric: the latest value, its normal (median), robust z-score and trend; plus an overall score

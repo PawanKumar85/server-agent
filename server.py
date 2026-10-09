@@ -180,6 +180,9 @@ _new_finals_tried: Dict[str, float] = {}  # Final -> when a run was last started
 
 # Last predictions cache: published via /api/predictions and hub
 _last_predictions: List[dict] = []
+PREDICT_EVERY_S = 30
+_predicted_at = 0.0
+_predict_lock = threading.Lock()
 
 
 def compute_adaptive_interval(spider_state: dict, base_interval: int) -> dict:
@@ -673,9 +676,14 @@ def start_run(final_ids: Optional[List[str]] = None, source: str = "manual") -> 
             except Exception as e:  # logging alerts must never break a run
                 print(f"[alerts] {type(e).__name__}: {e}")
 
-            # Run predictive failure scoring in background — never blocks the health cycle.
+            # Run predictive failure scoring in background — never blocks the health cycle. At most every
+            # PREDICT_EVERY_S: it rebuilds the whole graph, and a channel's run finishes about every 2 s.
             def _run_predictions() -> None:
-                global _last_predictions
+                global _last_predictions, _predicted_at
+                with _predict_lock:
+                    if time.monotonic() - _predicted_at < PREDICT_EVERY_S:
+                        return
+                    _predicted_at = time.monotonic()
                 try:
                     G = fetch_graph(driver)
                     preds = predict_all(driver, G["nodes"])
@@ -873,7 +881,12 @@ def node_for_traceroute(node_id: str) -> dict:
 
 
 def early_warnings() -> List[dict]:
-    """Servers still up whose metrics are far from their normal (anomaly score or rising trend)."""
+    """Servers still up whose metrics are far from their normal (anomaly score or rising trend). Shared for 30 s:
+    every channel's run asks (about every 2 s), and the scan covers every server's recent history."""
+    return shared("early_warnings", 30, _early_warnings)
+
+
+def _early_warnings() -> List[dict]:
     out = []
     for node, a in metrics.all_anomalies().items():
         found = anomaly_warnings(a)
