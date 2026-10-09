@@ -341,8 +341,10 @@ def glitches(hours: int = Query(24, ge=1, le=14 * 24)):
     """Glitches on the Final streams: each Final's last hour against its learned normal and its risk of glitches in
     the next 10 minutes (with reasons and the upstream failures that usually come first), the recent events, and
     whether there's enough history yet to train a model."""
-    return {"finals": srv.glitch_forecast(), "events": srv.glitch_probe.events(since_s=hours * 3600, limit=300),
-            "model": srv.glitch.model_readiness(srv.metrics.path), "trainedModel": _model_summary(),
+    return {"finals": srv.glitch_forecast(), "forecastEnabled": srv.GLITCH_FORECAST,
+            "events": srv.glitch_probe.events(since_s=hours * 3600, limit=300),
+            "model": srv.shared("glitch:readiness", 300, lambda: srv.glitch.model_readiness(srv.metrics.path)),
+            "trainedModel": _model_summary(),
             "probeEveryS": srv.glitch.PROBE_S,
             "lastProbeAt": srv.glitch_monitor.last_run, "monitorNetworkSlow": srv.glitch_monitor.network_slow}
 
@@ -351,8 +353,10 @@ def glitches(hours: int = Query(24, ge=1, le=14 * 24)):
 def alerts(hours: int = Query(24, ge=1, le=14 * 24)):
     """The one alert log (newest first), what's likely to alert next (with why and when), the learned "A is
     followed by B" rules, and how past predictions scored."""
-    return {"alerts": srv.alert_log.recent(hours * 3600), "upcoming": srv.alert_log.predict(srv.alert_topology),
-            "rules": srv.alert_log.learn()[:50], "scores": srv.alert_log.scores()}
+    # Reading only: the scheduler records predictions after each run; a page poll must not record a new batch.
+    return {"alerts": srv.alert_log.recent(hours * 3600),
+            "upcoming": srv.shared("alerts:upcoming", 15, lambda: srv.alert_log.predict(srv.alert_topology, record=False)),
+            "rules": srv.alert_log.learn()[:50], "scores": srv.shared("alerts:scores", 60, srv.alert_log.scores)}
 
 
 @router.get("/api/scte")

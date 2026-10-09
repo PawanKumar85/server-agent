@@ -429,13 +429,37 @@ def train_glitch_model() -> dict:
     return glitch_model.train(metrics.path, final_streams(), lambda n: ups.get(n, []))
 
 
-FORECAST_TTL_S = 30  # the forecast rests on hours of history: every tab and caller shares one result this long
+_shared: Dict[str, tuple] = {}  # key -> (computed at, value), see shared()
+_shared_locks: Dict[str, threading.Lock] = {}
+_shared_guard = threading.Lock()
+
+
+def shared(key: str, ttl_s: float, compute):
+    """One result for every open tab and caller for ttl_s: the dashboard polls these every 10-15 s from each tab,
+    and they summarise hours or days of history, so recomputing them per request was most of the app's CPU."""
+    with _shared_guard:
+        lock = _shared_locks.setdefault(key, threading.Lock())
+    with lock:  # callers arriving while it is computed wait for that result
+        hit = _shared.get(key)
+        if hit is None or time.monotonic() - hit[0] >= ttl_s:
+            hit = (time.monotonic(), compute())
+            _shared[key] = hit
+        return copy.deepcopy(hit[1])
+
+
+FORECAST_TTL_S = 60  # the forecast rests on hours of history: every tab and caller shares one result this long
+# The glitch risk forecast (and its hourly model retrain) is switched off by default to save CPU: it was about 15% of
+# the app's busy time. Glitch detection keeps running and recording; GLITCH_FORECAST=1 in .env turns the forecast on.
+GLITCH_FORECAST = os.environ.get("GLITCH_FORECAST", "0").lower() in ("1", "true", "yes", "on")
 _forecast_cache: Dict[str, Any] = {"at": 0.0, "value": None}
 _forecast_lock = threading.Lock()
 
 
 def glitch_forecast() -> List[dict]:
-    """The glitch forecast, computed at most once per FORECAST_TTL_S (callers arriving meanwhile share it)."""
+    """The glitch forecast, computed at most once per FORECAST_TTL_S (callers arriving meanwhile share it); empty
+    while GLITCH_FORECAST is off."""
+    if not GLITCH_FORECAST:
+        return []
     with _forecast_lock:
         if _forecast_cache["value"] is not None and time.monotonic() - _forecast_cache["at"] < FORECAST_TTL_S:
             return copy.deepcopy(_forecast_cache["value"])
@@ -473,6 +497,10 @@ def main_streams() -> List[dict]:
 
 
 def ad_breaks() -> List[dict]:
+    return shared("ad_breaks", 30, _ad_breaks)
+
+
+def _ad_breaks() -> List[dict]:
     mains: Dict[str, List[dict]] = {}
     for m in main_streams():
         mains.setdefault(m["channel"], []).append(m)
@@ -549,7 +577,7 @@ scte_store = scte.ScteStore(metrics.path)
 glitch_probe = glitch.GlitchProbe(metrics.path, scte_store=scte_store)
 glitch_probe.on_alert = lambda kind, node, channel, detail, source, ts: alert_log.add(kind, node, channel, detail, source, ts)
 glitch_monitor = glitch.GlitchMonitor(glitch_probe, final_streams, lambda: scheduler.enabled, hub.publish,
-                                      mains=main_streams, retrain=train_glitch_model)
+                                      mains=main_streams, retrain=train_glitch_model if GLITCH_FORECAST else None)
 
 
 def run_backup() -> dict:
@@ -818,7 +846,8 @@ def _ad_insights() -> List[dict]:
 
 def _upcoming_insights() -> dict:
     try:
-        return {"upcoming": alert_log.predict(alert_topology, record=False)[:8], "scores": alert_log.scores()}
+        return {"upcoming": shared("alerts:upcoming", 15, lambda: alert_log.predict(alert_topology, record=False))[:8],
+                "scores": shared("alerts:scores", 60, alert_log.scores)}
     except Exception:
         return {}
 

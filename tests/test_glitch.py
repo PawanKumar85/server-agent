@@ -175,8 +175,15 @@ def test_preceded_share_matches_the_one_by_one_search():
     assert _preceded_share(np.array([fails[0] - 1]), np.array(fails[:1])) == 0.0  # nothing before it
 
 
+def test_the_forecast_is_off_by_default(monkeypatch):
+    import server
+    monkeypatch.setattr(server, "_glitch_forecast", lambda: (_ for _ in ()).throw(AssertionError("computed")))
+    assert server.GLITCH_FORECAST is False and server.glitch_forecast() == []  # nothing computed
+
+
 def test_the_forecast_is_shared_for_a_while(monkeypatch):
     import server
+    monkeypatch.setattr(server, "GLITCH_FORECAST", True)
     calls = []
     monkeypatch.setattr(server, "_glitch_forecast", lambda: calls.append(1) or [{"url": "u", "risk": 1}])
     server._forecast_cache.update(at=0.0, value=None)
@@ -186,3 +193,13 @@ def test_the_forecast_is_shared_for_a_while(monkeypatch):
     server._forecast_cache["at"] -= server.FORECAST_TTL_S + 1
     server.glitch_forecast()
     assert len(calls) == 2
+
+
+def test_dashboard_summaries_are_shared():
+    import server
+    server._shared.clear()
+    calls = []
+    first = server.shared("t", 30, lambda: calls.append(1) or {"x": [1]})
+    first["x"].append(2)  # a caller's copy, not the shared one
+    assert server.shared("t", 30, lambda: calls.append(1) or {"x": [9]}) == {"x": [1]} and len(calls) == 1
+    assert server.shared("t", 0, lambda: calls.append(1) or {"x": [3]}) == {"x": [3]} and len(calls) == 2

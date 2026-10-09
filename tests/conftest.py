@@ -43,7 +43,8 @@ def fresh_health_caches():
     spider.clear_spider_caches()
     server = sys.modules.get("server")
     if server is not None:
-        server._forecast_cache.update(at=0.0, value=None)  # the glitch forecast is shared for 30 s
+        server._forecast_cache.update(at=0.0, value=None)  # the glitch forecast is shared for a minute
+        server._shared.clear()  # so are the dashboard summaries (server.shared)
     yield
     health.clear_health_caches()
     spider.clear_spider_caches()
