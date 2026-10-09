@@ -516,6 +516,11 @@ def _ad_breaks() -> List[dict]:
 alert_log = alertlog.AlertLog(metrics.path)
 metrics.alert_log = alert_log  # incidents (OUTAGE / ESCALATED / RECOVERY)
 _live_warnings: Set[str] = set()
+WARN_HOLD_S, WARN_REPEAT_S = 90, 1800  # an early warning must last this long, and is logged at most this often
+_warning_since: Dict[str, float] = {}
+_warning_logged: Dict[str, float] = {}
+PREDICTIONS_RECORD_S = 60
+_predictions_recorded_at = -1e9
 
 
 def alert_topology() -> dict:
@@ -546,6 +551,8 @@ def log_run_alerts(result, warnings: List[dict]) -> None:
     for rep in result.reports:
         for a in rep.alerts:
             alert_log.add(a.kind, a.spider_id.removeprefix("spider-"), None, a.message, "spider")
+    global _predictions_recorded_at
+    now = time.monotonic()
     current = set()
     for w in warnings:
         for text in w["warnings"]:
@@ -555,10 +562,22 @@ def log_run_alerts(result, warnings: List[dict]) -> None:
                 continue
             key = f"{w['node']}|{kind}|{text.split(' ')[0]}"
             current.add(key)
-            if key not in _live_warnings:
+            _warning_since.setdefault(key, now)
+            # Logged once it has lasted WARN_HOLD_S, and not again for that server and metric within WARN_REPEAT_S:
+            # a score hovering on the threshold logged a new warning every time it crossed (49,000 in 7 days).
+            if (now - _warning_since[key] >= WARN_HOLD_S
+                    and now - _warning_logged.get(key, -WARN_REPEAT_S) >= WARN_REPEAT_S):
+                _warning_logged[key] = now
                 alert_log.add(kind, w["node"], None, text, "anomaly")
+    for key in list(_warning_since):
+        if key not in current:
+            del _warning_since[key]  # it has to last WARN_HOLD_S again before it is logged
     _live_warnings.clear(); _live_warnings.update(current)
-    alert_log.predict(alert_topology)
+    # Recorded (for scoring) at most once a minute: after every channel's run (about every 2 s) it wrote tens of
+    # thousands of near-identical predictions, which also made their hit rates meaningless.
+    if now - _predictions_recorded_at >= PREDICTIONS_RECORD_S:
+        _predictions_recorded_at = now
+        alert_log.predict(alert_topology)
 
 
 def backfill_alerts() -> int:

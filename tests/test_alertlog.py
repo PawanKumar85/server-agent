@@ -92,3 +92,32 @@ def test_alerts_that_happen_together_are_not_a_warning(tmp_path):
         log.add("OUTAGE", "cdn/rang", None, ts=now - (k + 1) * 3600)
         log.add("OUTAGE", "xcode4", None, ts=now - (k + 1) * 3600 + 3)
     assert log.learn(now) == []
+
+
+def test_early_warnings_must_last_and_are_spaced_out(monkeypatch):
+    """A score hovering on the threshold logged a new early warning each time it crossed (49,000 in 7 days)."""
+    from types import SimpleNamespace
+    import server
+    added, predicted = [], []
+    monkeypatch.setattr(server.alert_log, "add", lambda kind, node, *a, **k: added.append((kind, node)))
+    monkeypatch.setattr(server.alert_log, "predict", lambda *a, **k: predicted.append(1))
+    for d in (server._warning_since, server._warning_logged):
+        d.clear()
+    monkeypatch.setattr(server, "_predictions_recorded_at", -1e9)
+    clock = [1000.0]
+    monkeypatch.setattr(server.time, "monotonic", lambda: clock[0])
+    result = SimpleNamespace(reports=[])
+    warn = [{"node": "cloud", "score": 7.0, "warnings": ["HTTP latency 900 is 7σ above its normal 300"]}]
+
+    def run(at, warnings):
+        clock[0] = at
+        server.log_run_alerts(result, warnings)
+    run(1000, warn); run(1060, warn)
+    assert added == []  # not yet held for 90 s
+    run(1095, warn)
+    assert added == [("EARLY_WARNING", "cloud")]
+    run(1100, []); run(1110, warn); run(1300, warn)  # gone and back: has to last again, and 30 min hasn't passed
+    assert len(added) == 1
+    run(1110 + 1800, warn)
+    assert len(added) == 2
+    assert len(predicted) <= 6  # predictions recorded at most once a minute, not on every run
