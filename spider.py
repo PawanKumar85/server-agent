@@ -296,11 +296,13 @@ ADAPTIVE_POLLING = os.environ.get("ADAPTIVE_POLLING", "1") not in ("0", "false",
 INTERMEDIATE_CADENCE_S = float(os.environ.get("INTERMEDIATE_CADENCE_S", "60.0"))
 
 _GLOBAL_NODE_CACHE: Dict[str, Tuple[float, NodeHealth]] = {}
+_RECORDED: Dict[str, datetime] = {}  # node -> the time of the check last written to the history
 
 
 def clear_spider_caches() -> None:
     """Clear shared cross-cycle node health caches."""
     _GLOBAL_NODE_CACHE.clear()
+    _RECORDED.clear()
 
 # Every node that carries a channel, with its latest stored per-URL health, for incident correlation.
 CHANNEL_CHAIN = """
@@ -598,7 +600,7 @@ class HealthRecorder:
 
     async def _check_and_record(self, node_id: str, max_age_s: Optional[float] = None) -> NodeHealth:
         health = await self._probe(node_id, max_age_s=max_age_s)
-        now_dt = datetime.now(timezone.utc)
+        now_dt = health.checked_at or datetime.now(timezone.utc)  # a reused check counts at the time it was made
         record, status, entry = await self._write(node_id, health, now_dt)
         if entry:  # after the commit: a retried transaction must not log twice
             self.metrics.add_incident(node_id, entry)
@@ -615,10 +617,12 @@ class HealthRecorder:
             _GLOBAL_NODE_CACHE[node_id] = (time.monotonic(), health)
         else:
             _GLOBAL_NODE_CACHE.pop(node_id, None)
-        try:
-            await asyncio.get_running_loop().run_in_executor(None, self.metrics.record, node_id, health, now_dt.timestamp())
-        except Exception:
-            pass  # history must never break the health cycle
+        if _RECORDED.get(node_id) != now_dt:  # a reused check is already in the history: not a second check
+            _RECORDED[node_id] = now_dt
+            try:
+                await asyncio.get_running_loop().run_in_executor(None, self.metrics.record, node_id, health, now_dt.timestamp())
+            except Exception:
+                pass  # history must never break the health cycle
         if self.on_node_checked:  # e.g. the traceroute escalation; it hands work to its own threads
             try:
                 self.on_node_checked(self.topology.node(node_id).model_dump(), health.up, health.consecutive_failures)

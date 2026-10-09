@@ -73,6 +73,9 @@ class NodeHealth(BaseModel):
     check_type: str
     up: bool
     latency_ms: Optional[float] = None
+    # When the check was really made. A reused check (spider.reuse_ttl) is judged at this time, not when it's
+    # recorded again: otherwise a moving stream's unchanged sequence number looked "stuck" for the reuse time.
+    checked_at: Optional[datetime] = None
     error: Optional[str] = None
     urls: List[UrlCheck] = []
     consecutive_failures: int = 0
@@ -366,6 +369,12 @@ async def icmp_diagnostics(host: str, use_cache: bool = True) -> dict:
 
 
 async def check_node(node: dict, client: httpx.AsyncClient, sem: asyncio.Semaphore) -> NodeHealth:
+    health = await _check_node(node, client, sem)
+    health.checked_at = datetime.now(timezone.utc)
+    return health
+
+
+async def _check_node(node: dict, client: httpx.AsyncClient, sem: asyncio.Semaphore) -> NodeHealth:
     """`node` has id, url (list), server_ip and optional checkType."""
     node_id = node["id"]
     check_type = (node.get("checkType") or "HLS").upper()

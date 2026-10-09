@@ -389,3 +389,35 @@ def test_checks_are_reused_by_how_the_server_is_doing():
     assert reuse_ttl(node(True, "FRESH", "FRESH")) == HEALTH_TTL_FRESH_S == 15
     assert reuse_ttl(node(True, "FRESH", "WARNING")) == HEALTH_TTL_WARNING_S == 5
     assert reuse_ttl(node(False, "STALE")) == 0
+
+
+def test_a_reused_check_never_looks_stuck():
+    """The false STALE_SEQUENCE flood: a server's check reused for 15 s was judged against the current time, so a
+    moving stream's unchanged sequence number looked stuck. It is judged at the time it was made."""
+    import json
+    from datetime import datetime, timedelta, timezone
+    from health import UrlCheck
+    from spider import apply_sequence_stall, merge_url_health
+    made = datetime(2026, 10, 9, 10, 0, 0, tzinfo=timezone.utc)
+    check = lambda: UrlCheck(url="u", up=True, detail="ok", target_duration_s=6, sequences={"": 1383047})
+    state = merge_url_health(None, [check()], (made - timedelta(seconds=10)).isoformat())  # first seen 10 s earlier
+    reused = [check()]
+    assert apply_sequence_stall(state, reused, made) == [] and reused[0].up  # judged at its own time: 10 s, fine
+    late = [check()]
+    assert apply_sequence_stall(state, late, made + timedelta(seconds=15)) and not late[0].up  # the old behaviour
+
+
+def test_check_node_stamps_when_it_was_made():
+    import asyncio
+    import httpx
+    import health
+    async def fake_icmp(host):
+        return {"alive": True}
+    health.icmp_diagnostics, orig = fake_icmp, health.icmp_diagnostics
+    try:
+        async def go():
+            async with httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(404))) as client:
+                return await health.check_node({"id": "n.example", "url": []}, client, asyncio.Semaphore(2))
+        assert asyncio.run(go()).checked_at is not None
+    finally:
+        health.icmp_diagnostics = orig
