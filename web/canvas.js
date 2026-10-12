@@ -151,7 +151,7 @@ function renderLegend() {
 // that live feed for at least one channel; activeFeeds maps "source|TYPE|target" -> [channels].
 let activeFeeds = new Map(), urlUp = {}, urlLive = {};  // urlLive: checked and up
 let channelFeed = {};  // channel -> "MAIN" | "BACKUP" | "NONE": which input its live feed comes from
-const FEED_TEXT = {MAIN: "MAIN", BACKUP: "BACKUP", AD: "AD BREAK", DEGRADED: "MAIN ⚠", NONE: "NO FEED"};
+const FEED_TEXT = {MAIN: "MAIN", DIRECT: "MAIN", BACKUP: "BACKUP", AD: "AD BREAK", DEGRADED: "MAIN ⚠", NONE: "NO FEED"};
 function buildChanIndex() {  // channel -> role -> [{url, domain}], plus each URL's last health
   chanIndex = {}; urlUp = {}; urlLive = {};
   for (const n of G.nodes) {
@@ -179,10 +179,16 @@ function computeActiveFeeds() {
   };
   channelFeed = {};
   for (const [channel, ch] of Object.entries(channels)) {
-    const main = ch.MainInput.find(up), input = main || ch.BackupLink.find(up);
+    // "On backup" only means something when a Main is configured and down. A channel with no Main URL (fed straight
+    // into its transcoder, like an RTMP push) runs on that direct feed while it is live; its Backup stays standby.
+    const hasMain = ch.MainInput.length > 0;
+    const main = ch.MainInput.find(up), backup = hasMain ? ch.BackupLink.find(up) : null;
+    const direct = !hasMain && (ch.Transcoding.some(t => urlLive[t.url]) || ch.FinalLink.some(f => urlLive[f.url]));
+    const input = main || backup;
     // No healthy input but the Final still answers live: the feed is degraded (e.g. Main falling behind), not gone.
     const finalUp = ch.FinalLink.length && ch.FinalLink.every(f => urlLive[f.url]);  // checked and live
-    channelFeed[channel] = input ? (main ? "MAIN" : adBreakNote(channel) ? "AD" : "BACKUP") : finalUp ? "DEGRADED" : "NONE";
+    channelFeed[channel] = direct ? "DIRECT" : input ? (main ? "MAIN" : adBreakNote(channel) ? "AD" : "BACKUP")
+      : finalUp ? "DEGRADED" : "NONE";
     const consumers = ch.Transcoding.length ? ch.Transcoding : ch.FinalLink;
     if (input) for (const c of consumers) add(input.domain, "FEEDS", c.domain, channel);
     for (const t of ch.Transcoding.filter(up)) for (const f of ch.FinalLink) add(t.domain, "PRODUCES", f.domain, channel);
@@ -190,10 +196,12 @@ function computeActiveFeeds() {
 }
 function feedBadge(channel) {
   const feed = channelFeed[channel]; if (!feed) return "";
-  const title = feed === "MAIN" ? "Running on its Main input" : feed === "BACKUP" ? "Main is down: running on its Backup"
+  const title = feed === "MAIN" ? "Running on its Main input"
+    : feed === "DIRECT" ? "No Main input URL configured: fed directly into its transcoder (its Backup is on standby)"
+    : feed === "BACKUP" ? "Main is down: running on its Backup"
     : feed === "AD" ? `Main paused for an SCTE-35 ad break, not a failover (${adBreakNote(channel)})`
     : feed === "DEGRADED" ? "Its input is failing checks, but the Final is still on air" : "Main and Backup are both down";
-  return `<span class="feed-badge ${feed.toLowerCase()}" title="${title}">${FEED_TEXT[feed]}</span>`;
+  return `<span class="feed-badge ${feed === "DIRECT" ? "main" : feed.toLowerCase()}" title="${title}">${FEED_TEXT[feed]}</span>`;
 }
 function carriedBy(e) {  // channels whose live feed uses this edge (a channel edge: only its own)
   const all = activeFeeds.get(`${e.source}|${e.type}|${e.domainTarget || e.target}`) || [];
