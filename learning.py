@@ -37,6 +37,8 @@ TOGETHER_S = 180  # outages starting this close together count as failing togeth
 TOGETHER_LIFT = 2.0  # ...but only when that happens at least this many times more often than chance
 FIRST_SHARE = 0.7  # "X usually goes first" only when X really is first at least this often
 MIN_PATTERN = 2  # occurrences before something counts as a pattern
+UNRELATED_MIN = 5  # two servers not connected in the pipeline must fail together this often to be a pattern
+NOISE_TOP = 5  # servers named in the one "not counted as outages" line
 SIMILAR_MIN = 0.45  # cosine (plus bonuses) from which a past case counts as similar
 LESSON_MIN = 0.6  # cosine between questions from which a past correction applies
 EXAMPLE_MIN = 0.7  # cosine between questions from which a 👍 answer is offered as an example
@@ -456,12 +458,15 @@ class Learner:
         for r in every:
             if r["class"] in NOT_OUTAGES:
                 noise.setdefault(r["node"], Counter())[r["class"]] += 1
-        for node, c in noise.items():
-            if sum(c.values()) >= MIN_PATTERN:
-                parts = [f"{c[BACKUP_FAILURE]} backup-feed failure{'s' if c[BACKUP_FAILURE] != 1 else ''}"] if c[BACKUP_FAILURE] else []
-                parts += [f"{c[BLIP]} short blip{'s' if c[BLIP] != 1 else ''} (back within a minute)"] if c[BLIP] else []
-                found.append({"kind": "noise", "nodes": [node], "count": sum(c.values()),
-                              "text": f"{short(node)} also had {' and '.join(parts)}: not counted as outages."})
+        if noise:  # one line for all of it: one per server buried the real findings
+            backups = sum(c[BACKUP_FAILURE] for c in noise.values())
+            blips = sum(c[BLIP] for c in noise.values())
+            top = sorted(noise.items(), key=lambda kv: -sum(kv[1].values()))[:NOISE_TOP]
+            parts = [f"{backups:,} backup-feed failure{'s' if backups != 1 else ''}"] if backups else []
+            parts += [f"{blips:,} short blip{'s' if blips != 1 else ''} (back within a minute)"] if blips else []
+            most = ", ".join(f"{short(n)} {sum(c.values()):,}" for n, c in top)
+            found.append({"kind": "noise", "nodes": [n for n, _ in top], "count": 0,  # listed after the findings
+                          "text": f"Not counted as outages: {' and '.join(parts)}. Most from {most}."})
         by_node: Dict[str, List[dict]] = {}
         for r in rows:
             if _dt(r["opened"]):
@@ -516,6 +521,7 @@ class Learner:
         span = max(86400.0, stamped[-1][0] - stamped[0][0]) if stamped else 86400.0
         counts = Counter(node for _, node in stamped)
         upstream = self._upstream()
+        same_host: Dict[str, dict] = {}
         for (a, b), n in pairs.items():
             if n < MIN_PATTERN:
                 continue
@@ -524,6 +530,15 @@ class Learner:
             if lift < TOGETHER_LIFT:
                 continue  # no more often than two frequent failers would meet by chance
             a_feeds_b, b_feeds_a = a in upstream.get(b, ()), b in upstream.get(a, ())
+            host_a, host_b = a.split("/", 1)[0], b.split("/", 1)[0]
+            if host_a == host_b and "/" in a and "/" in b:
+                # Two channels of one server failing together: the server (or its network), not the channels.
+                h = same_host.setdefault(host_a, {"channels": set(), "count": 0})
+                h["channels"].update((a, b))
+                h["count"] = max(h["count"], n)
+                continue
+            if not (a_feeds_b or b_feeds_a) and n < UNRELATED_MIN:
+                continue  # unconnected servers meeting a few times: most likely coincidence
             by_time = (a, b) if first[(a, b)] >= first[(b, a)] else (b, a)
             share = first[by_time] / n
             lift_words = f"{lift:.0f}x more often than chance" if lift < 100 else "far more often than chance"
@@ -543,22 +558,24 @@ class Learner:
                     text += "; neither one consistently fails first"
             found.append({"kind": "together", "nodes": [lead, follow], "count": n, "lift": round(lift, 1),
                           "text": text + "."})
-        # Category MTTR (Mean Time to Recovery) patterns
-        try:
-            from metrics import store as metrics_store
-            mttr_stats = metrics_store(self.path).mttr_by_category()  # this Learner's own file
-            for cat, stat in mttr_stats.items():
-                if stat["count"] >= 2:
-                    cat_name = PROBLEM_WORDS.get(cat, cat)
-                    med_w = duration_words(stat["median_s"])
-                    found.append({
-                        "kind": "mttr",
-                        "nodes": [],
-                        "count": stat["count"],
-                        "text": f"Outages caused by {cat_name} have a median recovery time (MTTR) of {med_w} (observed across {stat['count']} recovery cycles)."
-                    })
-        except Exception:
-            pass
+        for host, h in same_host.items():
+            chans = sorted(c.split("/", 1)[1] for c in h["channels"])
+            found.append({"kind": "host", "nodes": sorted(h["channels"]), "count": h["count"],
+                          "text": f"{short(host)} itself: its channels {', '.join(chans)} have failed together "
+                                  f"{h['count']} times, so the problem is that server or its network, not the channels."})
+
+        # MTTR per cause, from the same real outages as everything above (blips and backup-feed failures left out:
+        # outages logged before they were classed still had them in, 2,199 "recoveries" against ~400 outages).
+        by_cat: Dict[str, List[float]] = {}
+        for r in rows:
+            if r["duration_s"] is not None:
+                by_cat.setdefault(r["category"] or "down", []).append(r["duration_s"])
+        for cat, durs in by_cat.items():
+            if len(durs) >= 2:
+                found.append({"kind": "mttr", "nodes": [], "count": len(durs),
+                              "text": f"Outages caused by {PROBLEM_WORDS.get(cat, cat)} have a median recovery time "
+                                      f"(MTTR) of {duration_words(statistics.median(durs))} "
+                                      f"(observed across {len(durs)} outages)."})
 
         found.sort(key=lambda p: (-p["count"], p["text"]))
         self._patterns, self._patterns_at = found, time.time()

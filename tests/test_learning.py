@@ -117,15 +117,17 @@ def test_facts_link_to_known_nodes_skip_duplicates_and_can_be_forgotten(world):
     assert learner.facts() == []
 
 
-def test_patterns_time_of_day_recurrence_and_nodes_failing_together(world):
+def test_patterns_time_of_day_recurrence_and_nodes_failing_together(world, monkeypatch):
     metrics, learner = world
+    monkeypatch.setattr(learner, "_upstream", lambda: {"final": ["ingest1"]})  # ingest1 feeds final
     for day in range(4):  # ingest1 at ~02:00 IST every day; final follows a minute later
         log(metrics, outage("ingest1", at(0, days=day), 6), outage("final", at(1, days=day), 5))
     texts = [p["text"] for p in learner.patterns()]
     assert any(t.startswith("ingest1 has had 4 outages, usually lasting about 6 min, mostly because the video stopped updating") for t in texts)
     assert any("ingest1 usually fails between 02:00 and 04:00 IST" in t for t in texts)
     assert any("ingest1 fails about every" in t for t in texts)
-    assert any("have failed together 4 times" in t and "ingest1 usually goes first" in t for t in texts)
+    assert any("have failed together 4 times" in t and "ingest1 feeds final, so ingest1 is the likely cause (it fails "
+               "first" in t for t in texts)
 
 
 def test_context_is_empty_with_nothing_learned(world):
@@ -133,8 +135,9 @@ def test_context_is_empty_with_nothing_learned(world):
     assert learner.context("hello")["text"] == ""
 
 
-def test_failing_together_orders_by_the_estimated_onset_not_the_detection_time(world):
+def test_failing_together_orders_by_the_estimated_onset_not_the_detection_time(world, monkeypatch):
     metrics, learner = world
+    monkeypatch.setattr(learner, "_upstream", lambda: {"final": ["ingest1"]})  # ingest1 feeds final
     for day in range(2):  # final is detected first, but ingest1's stream stopped earlier
         a, b = outage("final", at(0, days=day), 5), outage("ingest1", at(1, days=day), 5)
         a[0][1]["rootCauseRanking"] = [{"node": "ingest1", "onsetAt": at(-2, days=day)},
@@ -142,7 +145,7 @@ def test_failing_together_orders_by_the_estimated_onset_not_the_detection_time(w
         b[0][1]["rootCauseRanking"] = [{"node": "ingest1", "onsetAt": at(-2, days=day)}]
         log(metrics, a, b)
     together = next(p for p in learner.patterns() if p["kind"] == "together")
-    assert together["nodes"] == ["ingest1", "final"] and "ingest1 usually goes first" in together["text"]
+    assert together["nodes"] == ["ingest1", "final"] and "it fails first" in together["text"]
 
 
 def test_everything_for_the_learning_page(world):
@@ -251,3 +254,30 @@ def test_real_outages_cascade(world):
         log(metrics, outage("ingest1", t_start, 3), outage("xcode4", t_xcode, 3))
     followers = learner.get_dynamic_alert_policy()["cascade_graph"]["ingest1"]
     assert any(f["follower"] == "xcode4" for f in followers)
+
+
+def test_the_summary_counts_real_outages_names_host_problems_and_skips_coincidence(world, monkeypatch):
+    metrics, learner = world
+    monkeypatch.setattr(learner, "_upstream", lambda: {"xcode4": ["ingest1"]})  # ingest1 feeds xcode4
+    for i in range(6):  # real outages on lg's two channels at the same moment: lg itself
+        t = at(minutes=i * 30)
+        log(metrics, outage("lg.example/abn", t, 2), outage("lg.example/idl", t, 2))
+    for i in range(3):  # 3 times together, ingest1 feeds xcode4: shown
+        t = at(minutes=300 + i * 30)
+        log(metrics, outage("ingest1", t, 2), outage("xcode4", t, 2))
+    for i in range(3):  # 3 times together, not connected: coincidence, not shown
+        t = at(minutes=500 + i * 30)
+        log(metrics, outage("cloud", t, 2), outage("jio", t, 2))
+    for i in range(20):  # blips: not outages, and not in the MTTR either
+        log(metrics, outage("cloud", at(minutes=700 + i * 5), 0.3))
+    learner.sync_cases(force=True)
+    texts = [p["text"] for p in learner.patterns()]
+    assert any(t.startswith("lg.example itself: its channels abn, idl have failed together 6 times") for t in texts), texts
+    assert not any("lg.example/abn and lg.example/idl" in t for t in texts)  # not as two separate channels
+    assert any("ingest1 and xcode4 have failed together 3 times" in t for t in texts)
+    assert not any("cloud and jio" in t for t in texts)
+    mttr = [t for t in texts if "MTTR" in t]
+    assert mttr and all("observed across 24 outages" in t for t in mttr if "video stopped" in t), mttr
+    noise = [p for p in learner.patterns() if p["kind"] == "noise"]
+    assert len(noise) == 1 and noise[0]["text"].startswith("Not counted as outages: 20 short blips")
+    assert learner.patterns()[-1]["kind"] == "noise"  # after the findings
