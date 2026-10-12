@@ -128,7 +128,9 @@ class VoiceLibrary:
         channels = [c for c in event.get("channels") or [] if c]
         ch = channels[0] if channels else ""
         state = "ok" if mood == "relieved" else ("down" if severity == "CRITICAL" else "warn")
-        pieces = [("opener", rng.choice(variants(OPENERS, mood, level)).format(name=name), GENERIC_OPENER[mood])]
+        opener = (rng.choice(variants(OPENERS, mood, level)).format(name=name) if self.voice.operator
+                  else GENERIC_OPENER[mood])  # general by default: no recorded clip that says a person's name
+        pieces = [("opener", opener, GENERIC_OPENER[mood])]
         if state == "ok":
             pieces.append(("channel", CHANNEL_OK.format(ch=ch) if ch else GENERIC_CHANNEL["ok"], GENERIC_CHANNEL["ok"]))
         else:

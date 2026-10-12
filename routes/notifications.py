@@ -272,23 +272,23 @@ def format_hinglish_final_announcement(
             symptom_clause = "connection refuse kar raha hai aur unreachable hai"
 
         agg_variants = [
-            f"Anushrav tere ko dikhaai nahi de raha hai {srv} down hai, Sahi kar!" + (f" {addon}" if addon else ""),
-            f"Anushrav! Dekh {srv} abhi tak down pada hai! Tere ko dikhai nahi deta kya? Sahi kar jaldi, channels drop ho rahe hain!",
-            f"Anushrav tere ko dikhaai nahi de raha hai {srv} down hai, Sahi kar! Channels par baar baar warning aa rahi hai, turant live restart maro!",
-            f"Anushrav tere ko dikhaai nahi de raha hai {srv} down hai, Sahi kar! {addon if addon else 'Pehle bhi yahi issue repeat hua tha, turant encoder check karo!'}",
-            f"Anushrav! Baar-baar {srv} warning throw kar raha hai, sahi kar isko pehle! Blackout hone ka wait kar rahe ho kya?",
-            f"Anushrav tere ko dikhaai nahi de raha hai {srv} {symptom_clause}! Sahi kar jaldi, broadcast freeze hone se pehle backup origin par switch karo!",
-            f"Anushrav bhai, abhi tak so rahe ho kya? {srv} par continuous alert aa raha hai! Sahi kar turant, failover route activate karo!",
-            f"Anushrav sir! Team ko turant bolo {srv} check kare, channels drop hone wale hain! Sahi kar jaldi!"
+            f"Team, dikhaai nahi de raha? {srv} down hai, Sahi kar!" + (f" {addon}" if addon else ""),
+            f"Team! Dekh {srv} abhi tak down pada hai! Tere ko dikhai nahi deta kya? Sahi kar jaldi, channels drop ho rahe hain!",
+            f"Team, dikhaai nahi de raha? {srv} down hai, Sahi kar! Channels par baar baar warning aa rahi hai, turant live restart maro!",
+            f"Team, dikhaai nahi de raha? {srv} down hai, Sahi kar! {addon if addon else 'Pehle bhi yahi issue repeat hua tha, turant encoder check karo!'}",
+            f"Team! Baar-baar {srv} warning throw kar raha hai, sahi kar isko pehle! Blackout hone ka wait kar rahe ho kya?",
+            f"Team, dikhaai nahi de raha? {srv} {symptom_clause}! Sahi kar jaldi, broadcast freeze hone se pehle backup origin par switch karo!",
+            f"Team, abhi tak so rahe ho kya? {srv} par continuous alert aa raha hai! Sahi kar turant, failover route activate karo!",
+            f"Team, turant {srv} check karo, channels drop hone wale hain! Sahi kar jaldi!"
         ]
         return normalize_hinglish_speech(agg_variants[idx % len(agg_variants)])
 
     # 2. RECOVERY (Good News / Normal) - Dynamic variations
     if sev == "RECOVERY":
         rec_variants = [
-            f"Anushrav Sir ji, Good news! Final {ch} ab wapas normal ho gaya hai. Stream smoothly chal rahi hai.",
-            f"Anushrav Sir ji, System update: Final node {ch} full 100% operational health par restore ho chuka hai. All green.",
-            f"Anushrav Sir ji, Stream recovery confirmed! {ch} live playback ab stable chal raha hai aur latency normal hai.",
+            f"Good news! Final {ch} ab wapas normal ho gaya hai. Stream smoothly chal rahi hai.",
+            f"System update: Final node {ch} full 100% operational health par restore ho chuka hai. All green.",
+            f"Stream recovery confirmed! {ch} live playback ab stable chal raha hai aur latency normal hai.",
         ]
         return normalize_hinglish_speech(rec_variants[idx % len(rec_variants)])
 
@@ -314,24 +314,24 @@ def format_hinglish_final_announcement(
     # 3. CRITICAL (Order Tone) - Dynamic variations
     if sev == "CRITICAL":
         crit_variants = [
-            f"Anushrav Sir - Final {ch} down ho chuka hai! {issue}! Turant encoder check karo aur stream restart karo! Delay bilkul mat karo!",
-            f"Anushrav Sir - Emergency alert! Final node {ch} completely blackout ho gaya hai. {addon if addon else 'MCR team turant action lijiye!'} Stream abhi restore karo!",
-            f"Anushrav Sir - Final {ch} offline chala gaya hai! {issue}. Encoders check karke broadcast turant live lijiye!",
-            f"Anushrav Sir - Attention! Final node {ch} feed abruptly band ho chuki hai. Upstream encoder restart karein bina delay ke!",
+            f"Final {ch} down ho chuka hai! {issue}! Turant encoder check karo aur stream restart karo! Delay bilkul mat karo!",
+            f"Emergency alert! Final node {ch} completely blackout ho gaya hai. {addon if addon else 'MCR team turant action lijiye!'} Stream abhi restore karo!",
+            f"Final {ch} offline chala gaya hai! {issue}. Encoders check karke broadcast turant live lijiye!",
+            f"Attention! Final node {ch} feed abruptly band ho chuki hai. Upstream encoder restart karein bina delay ke!",
         ]
         return normalize_hinglish_speech(crit_variants[idx % len(crit_variants)])
 
     # 4. WARNING (Polite Request Tone) - Dynamic variations
     if sev == "WARNING":
         warn_variants = [
-            f"Anushrav Sir ji Kripya dhyan dijiye. Final {ch} par stream mein thodi dikkat aa rahi hai: {issue}. Aapse request hai ki please ek baar check kar lijiye taaki viewers ko problem na ho.",
-            f"Anushrav Sir ji, Final {ch} par playback thoda slow observe hua hai: {issue}. {addon if addon else 'Aapse request hai ki please stream buffer verify kar lijiye.'}",
-            f"Anushrav Sir ji, Final node {ch} stream broadcast se halki peeche chal rahi hai. Request hai ki stream drop hone se pehle check kar lijiye.",
-            f"Anushrav Sir ji, Monitoring update: Final {ch} par minor performance drop notice hua hai. Please pipeline verify karwa lijiye.",
+            f"Kripya dhyan dijiye. Final {ch} par stream mein thodi dikkat aa rahi hai: {issue}. Aapse request hai ki please ek baar check kar lijiye taaki viewers ko problem na ho.",
+            f"Final {ch} par playback thoda slow observe hua hai: {issue}. {addon if addon else 'Aapse request hai ki please stream buffer verify kar lijiye.'}",
+            f"Final node {ch} stream broadcast se halki peeche chal rahi hai. Request hai ki stream drop hone se pehle check kar lijiye.",
+            f"Monitoring update: Final {ch} par minor performance drop notice hua hai. Please pipeline verify karwa lijiye.",
         ]
         return normalize_hinglish_speech(warn_variants[idx % len(warn_variants)])
 
-    return normalize_hinglish_speech(f"Anushrav Sir ji - Final {ch} update: {issue}")
+    return normalize_hinglish_speech(f"Final {ch} update: {issue}")
 
 
 class TTSAnnouncementRequest(BaseModel):

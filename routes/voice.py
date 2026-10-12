@@ -84,6 +84,18 @@ def speak_alert(body: AlertRequest):
     return srv.voice.alert(event)
 
 
+class SpeakableRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=2000)
+
+
+@router.post("/api/voice/speakable")
+def speakable(body: SpeakableRequest):
+    """The line in the form a Hindi voice reads naturally: Hindi words in Devanagari, English words left as they are
+    (hinglish_devanagari.py). Used by the browser voice; no audio is made here."""
+    from hinglish_devanagari import to_speakable
+    return {"text": to_speakable(body.text)}
+
+
 @router.get("/api/voice/clips/{name}")
 def clip_audio(name: str):
     """A stored clip (FLAC, or WAV for older ones); '/12', '/12.wav' and '/12.flac' all work."""

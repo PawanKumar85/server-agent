@@ -24,6 +24,8 @@
 const ttsAlerts = {
   enabled: true,
   targetLanguage: "hi-IN",    // Target Language: Hindi
+  // "browser": the browser's own voice (Indian voice, natural pacing, Hindi in Devanagari); "server": recorded clips.
+  engine: (() => { try { return localStorage.getItem("ttsEngine") || "browser"; } catch (_) { return "browser"; } })(),
   autoAdjust: true,           // Smart auto-adjustment enabled
   criticalCooldownMs: 300000, // 5 min cooldown for ongoing critical down alerts
   warnCooldownMs: Infinity,   // Warnings NEVER loop! Spoken strictly once.
@@ -78,9 +80,13 @@ function loadAvailableVoices() {
 function findHindiVoice(voices) {
   if (!voices || !voices.length) return null;
 
-  // 0. The most natural Hindi voices first: neural / enhanced / premium / online ones sound far less robotic.
-  const hindi = voices.filter(x => (x.lang || "").toLowerCase().replace("_", "-").startsWith("hi"));
-  let v = hindi.find(x => /natural|neural|enhanced|premium|online/i.test(x.name)) || hindi.find(x => x.name === "Google हिन्दी");
+  // 0. The most natural Indian voices first: Edge's neural Hindi (Swara, Madhur), Chrome's Google हिन्दी, then any
+  //    neural / enhanced / premium / online Hindi voice; they sound like a person, the others like a machine.
+  const lang = x => (x.lang || "").toLowerCase().replace("_", "-");
+  const hindi = voices.filter(x => lang(x).startsWith("hi"));
+  let v = hindi.find(x => /swara|madhur/i.test(x.name) && /natural|online|neural/i.test(x.name))
+    || hindi.find(x => x.name === "Google हिन्दी")
+    || hindi.find(x => /natural|neural|enhanced|premium|online/i.test(x.name));
   if (v) return v;
   // 1. Dedicated Hindi Voices (Lekha, Kalpana, Hemant)
   v = voices.find(x => /^(Lekha|Kalpana|Hemant)/i.test(x.name));
@@ -270,16 +276,42 @@ function getNextRotation(key, max) {
 }
 
 // --- Hinglish Phrasing Generator with Dynamic AI Switching & Past Data Variety ---
+// How a server is said aloud: "lg.ottlive.co.in" -> "lg" (voice.py spoken_server).
+const spokenServer = host => String(host || "").split("/")[0].split(".")[0];
+
+// Several channels down on one server at once: that server is the problem, said once (not channel by channel).
+function sharedServer(criticals) {
+  const hosts = new Set(criticals.map(c => String(c.nodeId || "").split("/")[0]));
+  return criticals.length > 1 && hosts.size === 1 ? [...hosts][0] : null;
+}
+
+// The newer alert types in plain Hinglish (the same words as voice.py's PROBLEMS, for the browser voice).
+function newerAlertDetail(title, text) {
+  const t = `${title} ${text}`;
+  if (/Not confirmed by the server|seen from outside only/i.test(t)) return "bahar se stream fail dikh rahi hai, par server ke andar chal rahi hai. Server theek hai, CDN aur network ka raasta check kar lijiye";
+  if (/no encoder process/i.test(t)) return "server pe encoder process hi nahi chal raha. Encoder service turant start karo";
+  if (/disk is \d+% full/i.test(t)) return "server ki disk bhar gayi hai. Disk khaali karo";
+  if (/memory is \d+% used|CPU is at \d+%/i.test(t)) return "server ka CPU ya memory full ho gaya hai. Load kam karo";
+  if (/Backup feed down/i.test(t)) return "sirf backup feed band hai, main feed se channel chal raha hai. Backup encoder ka push dekh lijiye";
+  if (/flapping|intermittent/i.test(t)) return "stream baar baar ruk ke chal rahi hai. Encoder ka upload network aur CPU dekh lijiye";
+  return null;
+}
+
 function buildConsolidatedHinglishMessage(criticals, warnings) {
-  // CRITICAL ALERT: Order dene wale tone me with "Anushrav Sir - " prefix
+  // CRITICAL ALERT: Order dene wale tone me with "" prefix
+  const host = sharedServer(criticals);
+  if (host) {
+    const names = criticals.slice(0, 4).map(c => c.channel).join(", ");
+    return `${spokenServer(host)} server ke ${criticals.length} channels ek saath down hain: ${names}! Problem server mein hai, channels mein nahi. ${spokenServer(host)} ka network aur streaming service turant check karo!`;
+  }
   if (criticals.length > 1) {
     const names = criticals.slice(0, 3).map(c => c.channel).join(", ");
     const more = criticals.length > 3 ? ` aur ${criticals.length - 3} anya channels` : "";
     const idx = getNextRotation("crit:multi", 3);
     const multiCritVariants = [
-      `Anushrav Sir - ${criticals.length} Final completely down hain! ${names}${more} band ho chuke hain! MCR team, turant action lo aur streaming abhi restore karo! Delay bilkul mat karo!`,
-      `Anushrav Sir - Major multi-channel outage! ${criticals.length} channels offline hain: ${names}${more}. Turant encoders check karke restore kijiye!`,
-      `Anushrav Sir - High priority emergency! ${names}${more} par zero video chunks aa rahe hain. MCR team immediate failover initiate karo!`
+      `${criticals.length} Final completely down hain! ${names}${more} band ho chuke hain! MCR team, turant action lo aur streaming abhi restore karo! Delay bilkul mat karo!`,
+      `Major multi-channel outage! ${criticals.length} channels offline hain: ${names}${more}. Turant encoders check karke restore kijiye!`,
+      `High priority emergency! ${names}${more} par zero video chunks aa rahe hain. MCR team immediate failover initiate karo!`
     ];
     return multiCritVariants[idx];
   }
@@ -290,6 +322,8 @@ function buildConsolidatedHinglishMessage(criticals, warnings) {
     const title = String(c.alertObj?.title || "");
     const text = String(c.alertObj?.text || "");
 
+    const newer = newerAlertDetail(title, text);
+    if (newer) return `Final ${ch} down hai! ${newer}!`;  // the real cause, without the generic tail
     let detail = "stream down ho chuki hai";
     if (title.includes("404") || text.includes("404") || title.includes("missing")) {
       detail = "ingest manifest missing hai aur 404 error aa raha hai. Live encoder push abhi restart karo";
@@ -303,10 +337,10 @@ function buildConsolidatedHinglishMessage(criticals, warnings) {
 
     const idx = getNextRotation(`crit:${ch}`, 4);
     const critVariants = [
-      `Anushrav Sir - Final ${ch} down ho chuka hai! ${detail}! Turant encoder check karo aur stream restart karo! Delay bilkul mat karo!`,
-      `Anushrav Sir - Emergency alert! Final node ${ch} completely blackout ho gaya hai. ${detail}. MCR team, stream abhi restore karo!`,
-      `Anushrav Sir - Final ${ch} offline chala gaya hai! ${detail}. Encoders check karke broadcast abhi live lijiye!`,
-      `Anushrav Sir - Attention! Final ${ch} feed abruptly band ho chuki hai. Upstream encoder restart karein bina delay ke!`
+      `Final ${ch} down ho chuka hai! ${detail}! Turant encoder check karo aur stream restart karo! Delay bilkul mat karo!`,
+      `Emergency alert! Final node ${ch} completely blackout ho gaya hai. ${detail}. MCR team, stream abhi restore karo!`,
+      `Final ${ch} offline chala gaya hai! ${detail}. Encoders check karke broadcast abhi live lijiye!`,
+      `Attention! Final ${ch} feed abruptly band ho chuki hai. Upstream encoder restart karein bina delay ke!`
     ];
     return critVariants[idx];
   }
@@ -316,9 +350,9 @@ function buildConsolidatedHinglishMessage(criticals, warnings) {
     const names = warnings.slice(0, 3).map(w => w.channel).join(", ");
     const idx = getNextRotation("warn:multi", 3);
     const multiWarnVariants = [
-      `Anushrav Sir ji Kripya dhyan dijiye. ${warnings.length} Final channels par stream performance degrade ho rahi hai: ${names}. Aapse request hai ki please ek baar verify kar lijiye taaki viewers ko buffering na dekhni pade.`,
-      `Anushrav Sir ji, Cluster alert: ${warnings.length} channels par playback jitter observe hua hai (${names}). Kripya upstream encoders inspect kar lijiye.`,
-      `Anushrav Sir ji, Multiple channels delay notice: ${names} live playback se slow chal rahe hain. Aapse request hai ki please check kar lijiye.`
+      `Kripya dhyan dijiye. ${warnings.length} Final channels par stream performance degrade ho rahi hai: ${names}. Aapse request hai ki please ek baar verify kar lijiye taaki viewers ko buffering na dekhni pade.`,
+      `Cluster alert: ${warnings.length} channels par playback jitter observe hua hai (${names}). Kripya upstream encoders inspect kar lijiye.`,
+      `Multiple channels delay notice: ${names} live playback se slow chal rahe hain. Aapse request hai ki please check kar lijiye.`
     ];
     return multiWarnVariants[idx];
   }
@@ -329,6 +363,8 @@ function buildConsolidatedHinglishMessage(criticals, warnings) {
     const title = String(w.alertObj?.title || "");
     const text = String(w.alertObj?.text || "");
 
+    const newer = newerAlertDetail(title, text);
+    if (newer) return `${ch} par ${newer}.`;  // not "viewers ko problem": the channel is on air
     let detail = "stream mein thodi dikkat aa rahi hai";
     if (title.includes("Falling behind") || text.includes("behind live")) {
       detail = "stream live broadcast se peeche chal rahi hai aur delay badh raha hai";
@@ -342,10 +378,10 @@ function buildConsolidatedHinglishMessage(criticals, warnings) {
 
     const idx = getNextRotation(`warn:${ch}`, 4);
     const warnVariants = [
-      `Anushrav Sir ji Kripya dhyan dijiye. Final channel ${ch} par ${detail}. Aapse request hai ki please ek baar check kar lijiye taaki viewers ko problem na ho.`,
-      `Anushrav Sir ji, Final ${ch} par playback thoda slow observe hua hai: ${detail}. Aapse request hai ki please stream buffer verify kar lijiye.`,
-      `Anushrav Sir ji, Final node ${ch} stream broadcast se halki peeche chal rahi hai. Request hai ki stream drop hone se pehle check kar lijiye.`,
-      `Anushrav Sir ji, Monitoring update: Final channel ${ch} par minor performance drop notice hua hai. Please pipeline verify karwa lijiye.`
+      `Kripya dhyan dijiye. Final channel ${ch} par ${detail}. Aapse request hai ki please ek baar check kar lijiye taaki viewers ko problem na ho.`,
+      `Final ${ch} par playback thoda slow observe hua hai: ${detail}. Aapse request hai ki please stream buffer verify kar lijiye.`,
+      `Final node ${ch} stream broadcast se halki peeche chal rahi hai. Request hai ki stream drop hone se pehle check kar lijiye.`,
+      `Monitoring update: Final channel ${ch} par minor performance drop notice hua hai. Please pipeline verify karwa lijiye.`
     ];
     return warnVariants[idx];
   }
@@ -497,8 +533,8 @@ async function runSpeechJob(job, current, onStop) {
   const serverName = ctx.server || null;
   await playChimeAndWait(severity, serverName);
   if (current.stopped || !ttsAlerts.enabled) return;
-  if (ctx.test) {  // the voice check: just the browser voice, nothing recorded
-    await speakBrowserAndWait(job.text, severity, null, onStop);
+  if (ctx.test || ttsAlerts.engine === "browser") {  // the browser's own voice (the default), or the voice check
+    await speakBrowserAndWait(job.text, severity, serverName, onStop);
     return;
   }
   const ctl = new AbortController();
@@ -562,33 +598,54 @@ function playClipAndWait(clip, severity, nodeIds, onStop) {
 }
 
 // The browser's own voice: natural pace and pitch only (extreme settings are what make it sound robotic).
+// How each mood is spoken: [rate, pitch, volume, pause between sentences in ms]. Close to normal speech, a little
+// quicker and firmer when it is urgent, softer and slower for a heads-up or good news.
+const BROWSER_PROSODY = {
+  CRITICAL: [1.04, 1.0, 1.0, 260], AGGRESSIVE: [1.08, 0.98, 1.0, 200], WARNING: [0.96, 1.02, 0.92, 320],
+  RECOVERY: [0.95, 1.04, 0.9, 340],
+};
+
+// The line as a Hindi voice reads it naturally: Hindi words in Devanagari, English words kept (server-side lexicon,
+// /api/voice/speakable). Falls back to the plain text if the server doesn't answer in time.
+async function speakableText(text, voice) {
+  const hindiVoice = voice && /^hi/i.test(voice.lang || "");
+  if (!hindiVoice) return text;
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), 1500);
+  try {
+    const res = await fetch("/api/voice/speakable", {method: "POST", headers: {"Content-Type": "application/json"},
+                                                     body: JSON.stringify({text: text.slice(0, 2000)}), signal: ctl.signal});
+    return res.ok ? ((await res.json()).text || text) : text;
+  } catch (_) {
+    return text;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Sentences, so each gets its own breath (and Chrome never cuts a long line off midway).
+function sentencesOf(text) {
+  return String(text).split(/(?<=[!?.।])\s+/).map(t => t.trim()).filter(Boolean);
+}
+
 function speakBrowserAndWait(text, severity, serverName, onStop) {
-  return new Promise(resolve => {
+  return new Promise(async resolve => {
     if (!window.speechSynthesis || !text) return resolve(false);
     window.speechSynthesis.cancel();
-    const utter = new SpeechSynthesisUtterance(normalizeTextForSpeech(text));
     const voice = getActiveVoice();
-    utter.lang = ttsAlerts.targetLanguage || "hi-IN";
-    if (voice) {
-      utter.voice = voice;
-      if (voice.lang) utter.lang = voice.lang;
-    }
-    const style = {
-      CRITICAL: [1.06, 1.0, 1.0], AGGRESSIVE: [1.1, 0.97, 1.0], WARNING: [0.98, 1.0, 0.9],
-      RECOVERY: [1.0, 1.03, 0.9]
-    }[severity] || [1.0, 1.0, 0.9];
-    [utter.rate, utter.pitch, utter.volume] = style;
+    const [rate0, pitch0, volume0, pauseMs] = BROWSER_PROSODY[severity] || [1.0, 1.0, 0.92, 300];
+    let rate = rate0, pitch = pitch0, volume = volume0;
     const tuning = serverName ? ttsAlerts.getNodeProfile(serverName)?.audio_tuning : null;
-    if (tuning?.speech_rate) utter.rate = Math.min(1.15, Math.max(0.9, tuning.speech_rate));
-    if (tuning?.speech_pitch) utter.pitch = Math.min(1.08, Math.max(0.92, tuning.speech_pitch));
+    if (tuning?.speech_rate) rate = Math.min(1.12, Math.max(0.9, tuning.speech_rate));
+    if (tuning?.speech_pitch) pitch = Math.min(1.08, Math.max(0.94, tuning.speech_pitch));
     const tod = ttsAlerts.dynamicPolicy?.time_of_day || {};
-    if (tod.volume_boost) utter.volume = Math.min(1.0, utter.volume + tod.volume_boost);
+    if (tod.volume_boost) volume = Math.min(1.0, volume + tod.volume_boost);
+
     ttsAlerts.speechStartTime = Date.now();
     ttsAlerts.activeServerSpeaking = serverName || null;
     ttsAlerts.speaking = true;
-    ttsAlerts.activeUtterance = utter;
-    showTtsBanner(text, severity, serverName);
-    let settled = false;
+    showTtsBanner(text, severity, serverName);  // the readable Roman text on screen
+    let settled = false, stopped = false;
     const finish = ok => {
       if (settled) return;
       settled = true;
@@ -598,11 +655,29 @@ function speakBrowserAndWait(text, severity, serverName, onStop) {
       hideTtsBanner();
       resolve(ok);
     };
-    const guard = setTimeout(() => { window.speechSynthesis.cancel(); finish(true); }, 60000);
-    onStop(() => { window.speechSynthesis.cancel(); finish(true); });
-    utter.onend = () => finish(true);
-    utter.onerror = () => finish(false);
-    window.speechSynthesis.speak(utter);
+    const guard = setTimeout(() => { stopped = true; window.speechSynthesis.cancel(); finish(true); }, 90000);
+    onStop(() => { stopped = true; window.speechSynthesis.cancel(); finish(true); });
+
+    const spoken = await speakableText(normalizeTextForSpeech(text), voice);
+    const parts = sentencesOf(spoken);
+    for (let i = 0; i < parts.length && !stopped; i++) {
+      const ok = await new Promise(done => {
+        const u = new SpeechSynthesisUtterance(parts[i]);
+        u.lang = (voice && voice.lang) || ttsAlerts.targetLanguage || "hi-IN";
+        if (voice) u.voice = voice;
+        // a slight lift on the first sentence and a settle on the last, like a person speaking
+        u.rate = rate;
+        u.pitch = Math.min(1.1, Math.max(0.9, pitch + (i === 0 ? 0.03 : i === parts.length - 1 ? -0.02 : 0)));
+        u.volume = volume;
+        ttsAlerts.activeUtterance = u;
+        u.onend = () => done(true);
+        u.onerror = () => done(false);
+        window.speechSynthesis.speak(u);
+      });
+      if (!ok && i === 0) return finish(false);  // the voice doesn't work at all: let the caller know
+      if (i < parts.length - 1 && !stopped) await sleep(pauseMs);
+    }
+    finish(true);
   });
 }
 
@@ -620,7 +695,7 @@ async function speakAlert(fallbackText, severity, ctx = {}) {
   if (tuning?.verbosity === "brief" && severity === "WARNING") {  // never for a real outage
     const srvShort = (ctx.server || "Server").split(".")[0];
     const chs = (ctx.channels || []).filter(Boolean).slice(0, 3).join(", ");
-    text = `Anushrav Sir, ${srvShort}${chs ? ` (${chs})` : ""} par chhota sa stall dikha hai. Ek baar check kar lijiye.`;
+    text = `${srvShort}${chs ? ` (${chs})` : ""} par chhota sa stall dikha hai. Ek baar check kar lijiye.`;
   } else if (tuning?.learned_fix && severity !== "RECOVERY") {
     text += ` Pichli baar iska fix tha: ${tuning.learned_fix}.`;
   }
@@ -768,21 +843,21 @@ function buildDynamicAggressiveVariants(srv, srvPhonetic, srvState, warnItems, n
   // 3. Multi-dimensional Dynamic Variant Pool (Combines exact telemetry, real elapsed time, and human dialogue)
   const variants = [
     // Core base variant with past context
-    `Anushrav tere ko dikhaai nahi de raha hai ${srvPhonetic} down hai, Sahi kar!${pastClause ? ' ' + pastClause : ''}`,
+    `Team, dikhaai nahi de raha? ${srvPhonetic} down hai, Sahi kar!${pastClause ? ' ' + pastClause : ''}`,
     // Visual inspection variant with symptom & channel impact
-    `Anushrav! Dekh ${srvPhonetic} abhi tak down pada hai! Tere ko dikhai nahi deta kya? Sahi kar jaldi, channels ${chList} par buffer badh raha hai!`,
+    `Team! Dekh ${srvPhonetic} abhi tak down pada hai! Tere ko dikhai nahi deta kya? Sahi kar jaldi, channels ${chList} par buffer badh raha hai!`,
     // Command urgent variant with impacted channels
-    `Anushrav tere ko dikhaai nahi de raha hai ${srvPhonetic} down hai, Sahi kar! Channels ${chList} par baar baar warning aa rahi hai, turant live restart maro!`,
+    `Team, dikhaai nahi de raha? ${srvPhonetic} down hai, Sahi kar! Channels ${chList} par baar baar warning aa rahi hai, turant live restart maro!`,
     // Root cause investigation variant
-    `Anushrav tere ko dikhaai nahi de raha hai ${srvPhonetic} down hai, Sahi kar! ${pastClause || 'Pehle bhi yahi crash hua tha'}, encoder logs check karke fix karo!`,
+    `Team, dikhaai nahi de raha? ${srvPhonetic} down hai, Sahi kar! ${pastClause || 'Pehle bhi yahi crash hua tha'}, encoder logs check karke fix karo!`,
     // High-urgency warning variant
-    `Anushrav! Baar-baar ${srvPhonetic} warning throw kar raha hai, sahi kar isko pehle! Blackout hone ka wait kar rahe ho kya?`,
+    `Team! Baar-baar ${srvPhonetic} warning throw kar raha hai, sahi kar isko pehle! Blackout hone ka wait kar rahe ho kya?`,
     // Live telemetry diagnostics variant
-    `Anushrav tere ko dikhaai nahi de raha hai ${srvPhonetic} ${symptomClause}! Sahi kar jaldi, broadcast freeze hone se pehle bypass route switch karo!`,
+    `Team, dikhaai nahi de raha? ${srvPhonetic} ${symptomClause}! Sahi kar jaldi, broadcast freeze hone se pehle bypass route switch karo!`,
     // Duration escalation variant
-    `Anushrav bhai, abhi tak so rahe ho kya? ${srvPhonetic} lagbhag ${minsDown} minute se alert throw kar raha hai! Sahi kar turant!`,
+    `Team, abhi tak so rahe ho kya? ${srvPhonetic} lagbhag ${minsDown} minute se alert throw kar raha hai! Sahi kar turant!`,
     // CTO executive direct callout variant
-    `Anushrav sir! Team ko turant bolo ${srvPhonetic} par failover initiate kare! Channels ${chList} down hone wale hain, Sahi kar!`
+    `Team, turant ${srvPhonetic} par failover initiate karo! Channels ${chList} down hone wale hain, Sahi kar!`
   ];
 
   return variants;
@@ -990,7 +1065,7 @@ ttsAlerts.evaluateAllFinalNodes = function () {
       const lastingMs = now - srvState.firstWarnAt;
       if (lastingMs >= ESCALATE_AFTER_MS && timeSinceLastSpoken >= ESCALATE_REPEAT_MS) {
         // ESCALATE TO ANGRY AGGRESSIVE TONE!
-        // "Anushrav tere ko dikhaai nahi de raha hai {server} down hai, Sahi kar!"
+        // "Team, dikhaai nahi de raha? {server} down hai, Sahi kar!"
         const chList = Array.from(srvState.channels).slice(0, 3).join(", ");
         const srvPhonetic = (srv && srv.includes(".") && !srv.includes("[dot"))
           ? srv.replace(/\./g, " [dot] ")
@@ -1033,7 +1108,7 @@ ttsAlerts.evaluateAllFinalNodes = function () {
   if (recoveredList.length > 0 && !pendingCriticals.length && !serverAggressiveAlerts.length && !pendingWarnings.length) {
     markSpoken(recoveredList.map(r => r.channel), "RECOVERY", now);
     const recNames = recoveredList.slice(0, 2).map(r => r.channel).join(", ");
-    const recMsg = `Anushrav Sir ji, Good news! Final ${recNames} ab wapas normal ho gaya hai. Stream smoothly chal rahi hai.`;
+    const recMsg = `Good news! Final ${recNames} ab wapas normal ho gaya hai. Stream smoothly chal rahi hai.`;
     speakAlert(recMsg, "RECOVERY", {
       channels: recoveredList.map(r => r.channel), server: recoveredList[0].serverName,
       subject: recoveredList.map(r => r.channel).sort().join(","), nodeIds: recoveredList.map(r => r.nodeId)
@@ -1061,15 +1136,17 @@ ttsAlerts.evaluateAllFinalNodes = function () {
     markSpoken(pendingCriticals.map(c => c.channel), "CRITICAL", now);
     const msg = buildConsolidatedHinglishMessage(pendingCriticals, []);
     const first = pendingCriticals[0];
+    const host = sharedServer(pendingCriticals);
     speakAlert(msg, "CRITICAL", {
-      channels: pendingCriticals.map(c => c.channel), server: first.serverName,
-      title: first.alertObj?.title, detail: first.alertObj?.text, subject: pendingCriticals.map(c => c.channel).sort().join(","),
+      channels: pendingCriticals.map(c => c.channel), server: host || first.serverName,
+      title: host ? `${host} server down: all its channels (${pendingCriticals.length})` : first.alertObj?.title,
+      detail: first.alertObj?.text, subject: pendingCriticals.map(c => c.channel).sort().join(","),
       nodeIds: pendingCriticals.map(c => c.nodeId)
     });
     return;
   }
 
-  // 2. Repeated Server Warning (Angry Aggressive Tone - "Anushrav tere ko dikhaai nahi de raha hai...")
+  // 2. Repeated Server Warning (Angry Aggressive Tone - "Team, dikhaai nahi de raha?...")
   if (serverAggressiveAlerts.length > 0) {
     const agg = serverAggressiveAlerts[0];
     agg.items.forEach(w => {

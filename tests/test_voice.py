@@ -175,3 +175,46 @@ def test_a_warning_is_never_announced_as_an_outage(tmp_path):
         assert "latency" in said and not any(w in said for w in outage_words), out["text"]
     down = v.alert({"severity": "CRITICAL", "channels": ["tnpnews"], "title": "Stream stopped updating", "subject": "d"})
     assert any(w in down["text"].lower() for w in outage_words)  # a real outage still says so
+
+
+def test_newer_alert_types_are_announced_as_what_they_are():
+    from voice import fix_steps, plain_problem
+    assert plain_problem("Backup feed down", "news's backup feed is failing; the main feed is still on air.") \
+        == "sirf backup feed band hai, main feed se channel chal raha hai"
+    assert "server ke andar chal rahi hai" in plain_problem("Not confirmed by the server",
+                                                             "Server unreachable, seen from outside only.")
+    # the agent's cause beats the symptom
+    assert plain_problem("Video stopped updating", "Confirmed from inside the server: no encoder process is running.") \
+        == "server pe encoder process hi nahi chal raha"
+    assert plain_problem("Video stopped updating", "Confirmed from inside the server: the disk is 97% full.") \
+        == "server ki disk bhar gayi hai"
+    assert plain_problem("Intermittent stream stalls (flapping)", "") == "stream baar baar ruk ke chal rahi hai"
+    assert "server mein hai" in plain_problem("lg.ottlive.co.in server down: all its channels (2)", "")
+    assert "CDN" in fix_steps("Not confirmed by the server", "seen from outside only")
+    assert plain_problem("Video stopped updating", "Newest piece is 40 s old") == "video aage nahi badh raha, stream atak gayi hai"
+
+
+def test_announcements_are_general_unless_an_operator_is_named(tmp_path, monkeypatch):
+    """No person is named by default: the lines address the team, and no recorded clip with a name is used."""
+    monkeypatch.delenv("VOICE_OPERATOR_NAME", raising=False)
+    v = Voice(VoiceStore(tmp_path / "voice.db"), rng=random.Random(1))
+    assert v.operator == "" and v.addressee("urgent", "rohan") == "Team"
+    for sev in ("CRITICAL", "WARNING", "RECOVERY"):
+        out = v.alert({"severity": sev, "channels": ["tnpnews"], "server": "cloud.ottlive.co.in",
+                       "title": "Video stopped updating"})
+        assert "Anushrav" not in out["text"] and " sir" not in out["text"].lower(), out["text"]
+    import voice_library
+    plan = voice_library.VoiceLibrary(v).plan({"severity": "CRITICAL", "channels": ["tnpnews"]}, "urgent", "shubh", 0,
+                                                random.Random(1))
+    assert plan[0][1] == voice_library.GENERIC_OPENER["urgent"]  # "Suno!", not a clip saying someone's name
+
+
+def test_the_browser_voice_gets_devanagari_hindi():
+    import server
+    from fastapi.testclient import TestClient
+    from tests.conftest import TEST_LOGIN
+    server.auth.attempts.clear()
+    c = TestClient(server.app)
+    c.post("/login", data={**TEST_LOGIN, "next": "/"}, follow_redirects=False)
+    out = c.post("/api/voice/speakable", json={"text": "Final tnpnews down hai! Encoder service turant start karo!"}).json()
+    assert out["text"] == "Final tnpnews down है! Encoder service तुरंत start करो!"  # Hindi words for a Hindi voice

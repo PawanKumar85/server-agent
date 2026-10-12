@@ -21,7 +21,7 @@ ANCHOR_PROTOTYPES = {
         "extreme recurrent outage persistent breakdown ignored alert",
         "flapping server crash continuous failure unresolved disaster",
         "repeated warnings same origin host down neglected error",
-        "anushrav tere ko dikhaai nahi de raha hai cdn [dot] OTTLive [dot] co [dot] in down hai, Sahi kar!",
+        "team, dikhaai nahi de raha? cdn [dot] OTTLive [dot] co [dot] in down hai, Sahi kar!",
         "deree ko dikhai nahi de raha server down hai Sahi kar",
     ],
     "critical": [

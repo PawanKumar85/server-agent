@@ -55,6 +55,18 @@ STYLES: Dict[str, dict] = {
 
 # Problems in the words people use, and the first steps to fix each (spoken after the alert).
 PROBLEMS = [
+    # Newer alert types (outage_class.py, agent_hub.py, the cards): checked first, since their text also mentions
+    # the symptom ("Server unreachable, seen from outside only") and the cause is what the operator needs.
+    (r"server down: all its channels|same server", "ek hi server ke saare channels ek saath band hain, problem server mein hai",
+     "us server ka network aur streaming service dekho, channels ke encoders nahi"),
+    (r"not confirmed by the server|seen from outside only|cdn path", "bahar se stream fail dikh rahi hai, par server ke andar chal rahi hai",
+     "server theek hai, CDN aur network ka raasta check karo"),
+    (r"no encoder process", "server pe encoder process hi nahi chal raha", "encoder service start karo, phir dekho kyun band hua tha"),
+    (r"disk is \d+% full", "server ki disk bhar gayi hai", "purani recordings aur logs hata ke disk khaali karo"),
+    (r"memory is \d+% used|cpu is at \d+%", "server ka CPU ya memory full ho gaya hai", "atke hue process band karo aur load kam karo"),
+    (r"backup feed (down|is failing)|backup down", "sirf backup feed band hai, main feed se channel chal raha hai",
+     "backup encoder ka push dekho; backup band kar diya hai toh Ignore this stream tick kar do"),
+    (r"flapping|intermittent", "stream baar baar ruk ke chal rahi hai", "encoder ka upload network aur CPU dekho, input feed bhi check karo"),
     (r"audio missing|without sound|audio cutting|no audio", "picture aa rahi hai par awaaz nahi aa rahi",
      "encoder ka audio input aur audio mapping dekho, phir encoder restart karo"),
     (r"video missing|without picture", "awaaz aa rahi hai par picture nahi aa rahi",
@@ -85,19 +97,21 @@ PROBLEMS = [
 RELIEVED_TAIL = "Jo fix kiya, Learning page pe likh dena... agli baar main seedha wahi bataunga."
 DEFAULT_STEPS = "encoder aur input feed check karo, phir stream restart karo"
 
+GENERAL_ADDRESSEE = "Team"  # who the lines talk to when no operator is named
+
 # Hand-written lines, read by the browser voice when the library has nothing for this mood yet. {name} the operator, {ch} channels, {srv} server,
 # {problem} plain words, {mins} minutes, {hist} a history sentence (may be empty).
 TEMPLATES: Dict[str, List[str]] = {
     "calm": [
-        "{name} sir, ek chhoti si baat... {ch} pe {problem}. Abhi down nahi hai, bas ek baar dekh lijiye.",
-        "Suniye {name} sir, {ch} thoda gadbad kar raha hai... {problem}. Time pe dekh lenge toh viewers ko pata bhi nahi chalega.",
-        "{name} sir, heads up... {ch} pe {problem}. {hist} Please ek nazar daal lijiye.",
+        "{name}, ek chhoti si baat... {ch} pe {problem}. Abhi down nahi hai, bas ek baar dekh lijiye.",
+        "Suniye {name}, {ch} thoda gadbad kar raha hai... {problem}. Time pe dekh lenge toh viewers ko pata bhi nahi chalega.",
+        "{name}, heads up... {ch} pe {problem}. {hist} Please ek nazar daal lijiye.",
         "Sir, {ch} pe halki si dikkat hai... {problem}. Main monitor kar raha hoon, aap bhi ek baar check kar lo.",
     ],
     "urgent": [
         "{name}! {ch} band ho gaya hai... {problem}. Viewers ko abhi kuch nahi dikh raha, jaldi dekho!",
         "Arre {name}, suno! {ch} down hai. {problem}. {srv} turant check karo, abhi!",
-        "{name} sir, emergency! {ch} off air hai... {problem}. {hist} Bina time waste kiye encoder dekho!",
+        "{name}, emergency! {ch} off air hai... {problem}. {hist} Bina time waste kiye encoder dekho!",
         "{name}, jaldi! {ch} ki stream ruk gayi hai. {problem}. Pehle {srv} dekho, phir baaki sab.",
     ],
     "angry": [
@@ -112,9 +126,9 @@ TEMPLATES: Dict[str, List[str]] = {
         "Suno {name}! {ch} down... {ch} down! {mins} minute! Abhi fix karo, abhi!",
     ],
     "relieved": [
-        "{name} sir, good news... {ch} wapas aa gaya hai. Stream bilkul smooth chal rahi hai.",
-        "Chalo, shukr hai! {ch} theek ho gaya, {name} sir. Sab normal hai ab.",
-        "{name} sir, {ch} recover ho gaya hai... viewers ko sab theek dikh raha hai. Thanks!",
+        "{name}, good news... {ch} wapas aa gaya hai. Stream bilkul smooth chal rahi hai.",
+        "Chalo, shukr hai! {ch} theek ho gaya, {name}. Sab normal hai ab.",
+        "{name}, {ch} recover ho gaya hai... viewers ko sab theek dikh raha hai. Thanks!",
     ],
 }
 
@@ -520,7 +534,8 @@ class Voice:
     def __init__(self, store: VoiceStore, operator: Optional[str] = None, rng: Optional[random.Random] = None):
         from voice_library import VoiceLibrary  # here: it imports this module
         self.store = store
-        self.operator = operator or os.getenv("VOICE_OPERATOR_NAME", "Anushrav")
+        # Announcements are general by default: no person is named unless VOICE_OPERATOR_NAME is set.
+        self.operator = (operator if operator is not None else os.getenv("VOICE_OPERATOR_NAME", "")).strip()
         self.rng = rng or random.Random()
         self.library = VoiceLibrary(self)
         from voice_neural import neural_voice  # natural local voice for what the library can't say
@@ -552,8 +567,8 @@ class Voice:
         return p["moods"].get(style) or p["voices"].get(speaker or "") or BOT_NAME
 
     def addressee(self, style: str, speaker: Optional[str]) -> str:
-        """Who the line talks to: always the operator."""
-        return self.operator
+        """Who the line talks to: the operator if one is named (VOICE_OPERATOR_NAME), else the team in general."""
+        return self.operator or GENERAL_ADDRESSEE
 
     def facts(self, event: dict, style: str, repeats: int, speaker: Optional[str] = None) -> dict:
         channels = [c for c in event.get("channels") or [] if c][:3]

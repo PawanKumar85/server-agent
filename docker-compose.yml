@@ -70,7 +70,7 @@ services:
       OPENROUTER_API_KEYS: ${OPENROUTER_API_KEYS:-}
       CHATBOT_MODEL: ${CHATBOT_MODEL:-qwen/qwen3.8-27b}
       # Voice alerts: who the alerts address (the phrases are pre-recorded; no API calls)
-      VOICE_OPERATOR_NAME: ${VOICE_OPERATOR_NAME:-Anushrav}
+      VOICE_OPERATOR_NAME: ${VOICE_OPERATOR_NAME:-}  # empty: general announcements, no name
       # Node Agents: comma-separated tokens they may connect with (empty: no agent can connect)
       AGENT_TOKENS: ${AGENT_TOKENS:-}
       GLITCH_FORECAST: ${GLITCH_FORECAST:-0}  # 1 = glitch risk forecast on (costs CPU)

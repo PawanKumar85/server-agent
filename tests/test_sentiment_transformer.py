@@ -43,7 +43,7 @@ class TestSentimentTransformer(unittest.TestCase):
             failure_count=3
         )
         self.assertEqual(transformed.severity, "AGGRESSIVE")
-        self.assertIn("Anushrav tere ko dikhaai nahi de raha hai", transformed.hinglish_text)
+        self.assertIn("Team, dikhaai nahi de raha?", transformed.hinglish_text)
         self.assertIn("gtc", transformed.hinglish_text)  # the server by its short name, not spelled dot by dot
         self.assertNotIn("[dot]", transformed.hinglish_text)
         self.assertIn("down hai, Sahi kar!", transformed.hinglish_text)
@@ -59,7 +59,7 @@ class TestSentimentTransformer(unittest.TestCase):
             reason="Fatal 404 manifest missing stream down"
         )
         self.assertEqual(transformed.severity, "CRITICAL")
-        self.assertTrue(transformed.hinglish_text.startswith("Anushrav Sir -"))
+        self.assertNotIn("Anushrav", transformed.hinglish_text)  # general: no person named
         self.assertEqual(transformed.recommended_tone["tone_name"], "Order Tone")
         self.assertGreaterEqual(transformed.recommended_tone["volume"], 0.95)
 

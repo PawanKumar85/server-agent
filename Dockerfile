@@ -19,18 +19,8 @@ RUN python -c "from fastembed import TextEmbedding; TextEmbedding('sentence-tran
  && python -c "from fastembed.rerank.cross_encoder import TextCrossEncoder; TextCrossEncoder('Xenova/ms-marco-MiniLM-L-6-v2', cache_dir='/opt/fastembed')" \
  && chmod -R a+rX /opt/fastembed
 
-# Bake the local neural Hindi voices (Piper, ~190 MB) into the image: natural alerts with no API calls at runtime.
-ENV PIPER_DIR=/opt/piper
-RUN python - <<'EOF'
-import os, urllib.request
-base = "https://huggingface.co/rhasspy/piper-voices/resolve/main/hi/hi_IN"
-os.makedirs("/opt/piper", exist_ok=True)
-for v in ("rohan", "pratham", "priyamvada"):
-    for ext in ("onnx", "onnx.json"):
-        urllib.request.urlretrieve(f"{base}/{v}/medium/hi_IN-{v}-medium.{ext}", f"/opt/piper/hi_IN-{v}-medium.{ext}")
-        os.chmod(f"/opt/piper/hi_IN-{v}-medium.{ext}", 0o644)  # here: a separate chmod step would copy all of it
-os.chmod("/opt/piper", 0o755)
-EOF
+# No local neural voice in the image any more: alerts are spoken by the browser's own Indian voice (web/tts-alerts.js).
+# voice_neural.py reports itself unavailable without Piper, and the server voice then hands the text to the browser.
 
 # Run as an unprivileged user; its state (scheduler on/off + interval) lives in a volume.
 RUN useradd --create-home --uid 10001 app && mkdir -p /app/state /app/backups && chown app /app/state /app/backups
