@@ -27,6 +27,7 @@ from dotenv import load_dotenv
 from neo4j import GraphDatabase
 from pydantic import BaseModel
 
+from scte import ad_break_status
 from outage_class import BACKUP_FAILURE, OUTAGE, backup_only, classify
 from health import STALE_AFTER_TARGET_DURATIONS, NodeHealth, UrlCheck, check_node, failing, failure_text, http_client
 import rca_rank
@@ -296,7 +297,16 @@ ADAPTIVE_POLLING = os.environ.get("ADAPTIVE_POLLING", "1") not in ("0", "false",
 INTERMEDIATE_CADENCE_S = float(os.environ.get("INTERMEDIATE_CADENCE_S", "60.0"))
 
 _GLOBAL_NODE_CACHE: Dict[str, Tuple[float, NodeHealth]] = {}
-_RECORDED: Dict[str, datetime] = {}  # node -> the time of the check last written to the history
+_RECORDED: Dict[str, datetime] = {}
+_SCTE_CLIENT = None  # one keep-alive client for the on-demand ad-break checks (spider._ad_break)
+
+
+def _scte_client():
+    global _SCTE_CLIENT
+    if _SCTE_CLIENT is None:
+        import httpx
+        _SCTE_CLIENT = httpx.Client(headers={"User-Agent": "StreamGraph-AdBreakCheck/1"})
+    return _SCTE_CLIENT  # node -> the time of the check last written to the history
 
 
 def clear_spider_caches() -> None:
@@ -836,6 +846,7 @@ class Rca(BaseModel):
     outage: bool = False
     impact: str = "No faults found."
     failover: List[str] = []
+    ad_break: List[str] = []  # a Main paused for an SCTE-35 ad break: said instead of "failover to backup"
     path: List[Step] = []
     consecutive_failures: int = 0
     alerted: bool = False
@@ -899,6 +910,7 @@ class Spider:
         self.steps = 0  # hops taken this run (saved with the final position)
         self.path: List[Step] = []
         self.failover: List[str] = []
+        self.ad_break: List[str] = []
         # The channel this spider follows upstream (per-channel FinalLink); None = whole node.
         self.channel = topology.node(final_id).final_channel if final_id in topology.nodes else None
         self.alert_threshold = alert_threshold if alert_threshold is not None else ALERT_CONSECUTIVE_THRESHOLD
@@ -971,11 +983,33 @@ class Spider:
         down = [m for m in members if not results[m].up]
         main_down = [m for m in down if self._is_main(m)]
         if up and main_down:
-            self.failover.append(
-                f"{owner}: MainInput {', '.join(main_down)} DOWN, "
-                f"{', '.join(up)} UP - Failover AVAILABLE"
-            )
+            await self._failover_or_ad_break(owner, main_down, up)
         return bool(up)
+
+    async def _failover_or_ad_break(self, owner: str, main_down: List[str], up: List[str]) -> None:
+        """Main down while another input is up: a failover to backup, unless the Main (or the Final) is in an
+        SCTE-35 ad break, which pauses or switches the Main on purpose. That's checked first, on demand."""
+        ad = await self._ad_break(main_down)
+        if ad:
+            self.ad_break.append(f"{owner}: MainInput {', '.join(main_down)} paused for an SCTE-35 ad break "
+                                 f"({ad}), not a failover")
+            return
+        self.failover.append(f"{owner}: MainInput {', '.join(main_down)} DOWN, {', '.join(up)} UP - Failover AVAILABLE")
+
+    async def _ad_break(self, mains: List[str]) -> Optional[str]:
+        """'CUE-OUT 45 s ago, planned 120 s' when an ad break is open on one of the Mains' stream for this channel or
+        on the Final; None otherwise (or when it can't be read)."""
+        urls = [l["url"] for m in mains for l in (self.topology.node(m).links or [])
+                if l.get("role") == "MainInput" and (not self.channel or l.get("channel") == self.channel)]
+        urls += [l["url"] for l in (self.topology.node(self.final_id).links or []) if l.get("role") == "FinalLink"]
+        now = time.time()
+        for url in urls:
+            status = await asyncio.get_running_loop().run_in_executor(None, ad_break_status, _scte_client(), url)
+            if status:
+                ago = int(now - status["since"])
+                planned = f", planned {int(status['planned_s'])} s" if status.get("planned_s") else ""
+                return f"{status['style']} CUE-OUT {ago} s ago{planned}" + (", just ended" if status["ended"] else "")
+        return None
 
     def _is_main(self, node_id: str) -> bool:
         """Main input for this spider's channel (a domain can be Main for one channel, Backup for another)."""
@@ -1063,9 +1097,7 @@ class Spider:
                         m_health = await self.visit(member)
                         if m_health.up and not alt_node:
                             alt_node = member
-                            self.failover.append(
-                                f"{parent}: MainInput {start_node} DOWN, {member} UP - Failover AVAILABLE"
-                            )
+                            await self._failover_or_ad_break(parent, [start_node], [member])
             if alt_node:
                 start_node = alt_node
             else:
@@ -1110,7 +1142,7 @@ class Spider:
 
     def build_rca(self, root: Optional[Root]) -> Rca:
         final_up = next((s.up for s in self.path if s.node_id == self.final_id), False)
-        rca = Rca(path=self.path, failover=self.failover, outage=not final_up)
+        rca = Rca(path=self.path, failover=self.failover, ad_break=self.ad_break, outage=not final_up)
         if root is None:
             rca.impact = (
                 "No current service outage: failover input in use." if self.failover else "No faults found."
@@ -1222,7 +1254,7 @@ class Spider:
 
         rca_payload = (
             rca.model_dump_json(exclude_defaults=True)
-            if (root is None and not self.failover)
+            if (root is None and not self.failover and not self.ad_break)
             else rca.model_dump_json()
         )
         await self._save_position()

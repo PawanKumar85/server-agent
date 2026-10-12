@@ -337,6 +337,37 @@ def scan(client, url: str, now: Optional[float] = None) -> dict:
     return {"markers": extract_markers(pl, now), "segments": segment_states(pl, now)}
 
 
+AD_BREAK_ENDED_S = 30  # a break that ended this recently still explains a Main that paused around it
+
+
+def ad_break_status(client, url: str, now: Optional[float] = None) -> Optional[dict]:
+    """Whether an SCTE-35 ad break is open on this stream right now (or ended in the last AD_BREAK_ENDED_S): read
+    from one playlist, no video, so it can be asked on demand (before calling a Main's pause a failover, say).
+    Returns {"since", "planned_s", "style", "ended"} or None (no break, or the playlist can't be read). A break
+    past its planned end by STUCK_GRACE_S (or open longer than UNPLANNED_MAX_S) is not an ad break any more but a
+    stuck one, so it returns None and the failure is reported as usual."""
+    now = now or time.time()
+    try:
+        markers = scan_markers(client, url, now)
+    except Exception:
+        return None  # unreachable / 404: nothing to say about ads, it's a real failure
+    outs = [m for m in markers if m["kind"] == "OUT"]
+    if not outs:
+        return None
+    last_out = max(outs, key=lambda m: (m["seq"], m["at"] or 0))
+    ins_after = [m for m in markers if m["kind"] == "IN" and (m["seq"], m["at"] or 0) >= (last_out["seq"], last_out["at"] or 0)]
+    since, planned = last_out["at"] or now, last_out.get("planned_s")
+    if ins_after:
+        ended = max(m["at"] or now for m in ins_after)
+        if now - ended > AD_BREAK_ENDED_S:
+            return None
+        return {"since": since, "planned_s": planned, "style": last_out["style"], "ended": ended}
+    limit = (planned + STUCK_GRACE_S) if planned else UNPLANNED_MAX_S
+    if now - since > limit:
+        return None  # open far too long: stuck, not an ad
+    return {"since": since, "planned_s": planned, "style": last_out["style"], "ended": None}
+
+
 def scan_markers(client, url: str, now: Optional[float] = None) -> List[dict]:
     """Markers in a stream's playlist (its top variant for a master), without downloading any video."""
     import m3u8

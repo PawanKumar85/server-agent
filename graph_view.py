@@ -104,7 +104,7 @@ def fetch_graph(driver, incidents=None) -> dict:
         if s.get("rca"):
             try:
                 rca_obj = json.loads(s["rca"])
-                if s["status"] == "RUNNING" and not rca_obj.get("failover"):
+                if s["status"] == "RUNNING" and not rca_obj.get("failover") and not rca_obj.get("ad_break"):
                     s["rca"] = None
                 else:
                     s["rca"] = {k: v for k, v in rca_obj.items() if v not in (None, [], "")}

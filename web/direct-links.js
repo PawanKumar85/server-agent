@@ -25,6 +25,7 @@ function directPairs() {
     const main = mains[0], final = finals[0];
     const s = {main: state(main), backup: state(backup), final: state(final)};
     const overall = s.final === "down" ? {tone: "down", text: "Off air"}
+      : s.main === "down" && adBreakNote(channel) ? {tone: "idle", text: "Ad break"}
       : s.main === "down" && s.backup === "up" ? {tone: "warn", text: "On backup"}
       : s.main === "down" ? {tone: "down", text: "Main down"}
       : s.main === "up" && s.final === "up" ? {tone: "up", text: "OK"}

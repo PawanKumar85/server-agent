@@ -209,6 +209,16 @@ document.addEventListener("click", e => {
 });
 
 // ---------- Stream Stability & Flapping Analyzer ----------
+// The channel's Main paused for an SCTE-35 ad break, as its spider found before calling it a failover (spider.py);
+// null when it isn't. channel -> its Final's spider -> rca.ad_break.
+function adBreakNote(channel) {
+  const final = (G.nodes || []).find(n => (n.links || []).some(l => l.role === "FinalLink" && l.channel === channel));
+  const spider = final && (G.spiders || []).find(s => s.finalLinkId === final.id);
+  const notes = spider && spider.rca && spider.rca.ad_break;
+  return notes && notes.length ? notes[0] : null;
+}
+window.adBreakNote = adBreakNote;
+
 // A stream counts as failing unless the operator ticked "ignore this stream" (channel_mute.StreamIgnores).
 function isFailing(h) {
   return !!h && h.up === false && !h.ignored;

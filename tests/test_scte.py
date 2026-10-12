@@ -183,3 +183,47 @@ def test_ad_break_tracking_is_off_by_default():
     assert server.SCTE_ENABLED is False
     assert server.glitch_probe.scte is None  # the probe neither records Final markers nor scans the Mains
     assert server.ad_breaks() == []
+
+
+def test_ad_break_status_on_demand():
+    """Before a Main's pause is called a failover: is an SCTE-35 ad break open on it right now?"""
+    import httpx
+    from scte import ad_break_status
+    serve = {}
+    client = httpx.Client(transport=httpx.MockTransport(
+        lambda r: httpx.Response(200, text=serve[str(r.url)]) if str(r.url) in serve else httpx.Response(404)))
+    now = T0 + 6 * 4 + 6  # just after the 4th segment ends
+    serve["https://m/open.m3u8"] = playlist(10, ["", "", "#EXT-X-CUE-OUT:120", "#EXT-X-CUE-OUT-CONT:ElapsedTime=6,Duration=120"])
+    open_ = ad_break_status(client, "https://m/open.m3u8", now)
+    assert open_ and open_["planned_s"] == 120 and open_["ended"] is None  # CUE-OUT, no CUE-IN yet
+    serve["https://m/none.m3u8"] = playlist(10, ["", "", "", ""])
+    assert ad_break_status(client, "https://m/none.m3u8", now) is None
+    serve["https://m/ended.m3u8"] = playlist(10, ["#EXT-X-CUE-OUT:12", "", "#EXT-X-CUE-IN", ""])
+    assert ad_break_status(client, "https://m/ended.m3u8", now)["ended"]  # ended 18 s ago: still explains a pause
+    assert ad_break_status(client, "https://m/ended.m3u8", now + 60) is None  # long over
+    assert ad_break_status(client, "https://m/open.m3u8", now + 120 + 200) is None  # far past its plan: stuck
+    assert ad_break_status(client, "https://m/missing.m3u8", now) is None  # 404: a real failure, not an ad
+
+
+def test_an_ad_break_is_not_called_a_failover(monkeypatch):
+    import asyncio
+    import spider
+    from types import SimpleNamespace
+    calls = []
+    monkeypatch.setattr(spider, "ad_break_status", lambda client, url, now=None: calls.append(url) or (
+        {"since": __import__("time").time() - 40, "planned_s": 120, "style": "CUE", "ended": None}
+        if "main" in url else None))
+    node = lambda links: SimpleNamespace(links=links)
+    s = spider.Spider.__new__(spider.Spider)
+    s.channel, s.final_id, s.failover, s.ad_break = "news", "final.example/news", [], []
+    s.topology = SimpleNamespace(node=lambda n: {
+        "main.example": node([{"url": "https://main.example/news.m3u8", "role": "MainInput", "channel": "news"}]),
+        "final.example/news": node([{"url": "https://final.example/news.m3u8", "role": "FinalLink", "channel": "news"}]),
+    }[n])
+    asyncio.run(s._failover_or_ad_break("xcode.example", ["main.example"], ["backup.example"]))
+    import re
+    assert s.failover == [] and re.search(r"paused for an SCTE-35 ad break \(CUE CUE-OUT (39|40) s ago, planned 120 s\), "
+                                          r"not a failover", s.ad_break[0])
+    monkeypatch.setattr(spider, "ad_break_status", lambda client, url, now=None: None)
+    asyncio.run(s._failover_or_ad_break("xcode.example", ["main.example"], ["backup.example"]))
+    assert s.failover == ["xcode.example: MainInput main.example DOWN, backup.example UP - Failover AVAILABLE"]

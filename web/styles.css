@@ -360,6 +360,7 @@ svg#edges { position: absolute; left: 0; top: 0; overflow: visible; pointer-even
 .feed-badge { flex: none; line-height: 1.5; }
 .feed-badge.main { background: var(--up); }
 .feed-badge.backup { background: var(--backup-feed); }
+.feed-badge.ad { background: var(--muted); }  /* Main paused for an SCTE-35 ad break, not a failover */
 .feed-badge.none { background: var(--down); }
 .edge.active.backup { stroke: var(--backup-feed); }
 .edge-label.active.backup { fill: var(--backup-feed); }

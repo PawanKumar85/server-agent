@@ -151,7 +151,7 @@ function renderLegend() {
 // that live feed for at least one channel; activeFeeds maps "source|TYPE|target" -> [channels].
 let activeFeeds = new Map(), urlUp = {}, urlLive = {};  // urlLive: checked and up
 let channelFeed = {};  // channel -> "MAIN" | "BACKUP" | "NONE": which input its live feed comes from
-const FEED_TEXT = {MAIN: "MAIN", BACKUP: "BACKUP", DEGRADED: "MAIN ⚠", NONE: "NO FEED"};
+const FEED_TEXT = {MAIN: "MAIN", BACKUP: "BACKUP", AD: "AD BREAK", DEGRADED: "MAIN ⚠", NONE: "NO FEED"};
 function buildChanIndex() {  // channel -> role -> [{url, domain}], plus each URL's last health
   chanIndex = {}; urlUp = {}; urlLive = {};
   for (const n of G.nodes) {
@@ -182,7 +182,7 @@ function computeActiveFeeds() {
     const main = ch.MainInput.find(up), input = main || ch.BackupLink.find(up);
     // No healthy input but the Final still answers live: the feed is degraded (e.g. Main falling behind), not gone.
     const finalUp = ch.FinalLink.length && ch.FinalLink.every(f => urlLive[f.url]);  // checked and live
-    channelFeed[channel] = input ? (main ? "MAIN" : "BACKUP") : finalUp ? "DEGRADED" : "NONE";
+    channelFeed[channel] = input ? (main ? "MAIN" : adBreakNote(channel) ? "AD" : "BACKUP") : finalUp ? "DEGRADED" : "NONE";
     const consumers = ch.Transcoding.length ? ch.Transcoding : ch.FinalLink;
     if (input) for (const c of consumers) add(input.domain, "FEEDS", c.domain, channel);
     for (const t of ch.Transcoding.filter(up)) for (const f of ch.FinalLink) add(t.domain, "PRODUCES", f.domain, channel);
@@ -191,6 +191,7 @@ function computeActiveFeeds() {
 function feedBadge(channel) {
   const feed = channelFeed[channel]; if (!feed) return "";
   const title = feed === "MAIN" ? "Running on its Main input" : feed === "BACKUP" ? "Main is down: running on its Backup"
+    : feed === "AD" ? `Main paused for an SCTE-35 ad break, not a failover (${adBreakNote(channel)})`
     : feed === "DEGRADED" ? "Its input is failing checks, but the Final is still on air" : "Main and Backup are both down";
   return `<span class="feed-badge ${feed.toLowerCase()}" title="${title}">${FEED_TEXT[feed]}</span>`;
 }
